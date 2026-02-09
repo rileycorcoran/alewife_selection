@@ -1,0 +1,72 @@
+#!/bin/bash
+#SBATCH --job-name=sample_callHaplotypes      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL                       # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=HAPLOCALL_SCRIPTSDIR/4_callHaplotypes_ALIGNMENT.out    # Standard output log
+#SBATCH --error=HAPLOCALL_SCRIPTSDIR/4_callHaplotypes_ALIGNMENT.err     # Standard error log
+
+date
+
+## Submission script - can be performed anywhere; this will submit each individual separately
+## for file in $(ls BAMS_DIR/*MARKDUP_OUT.bam | sed 's#MARKDUP_OUT.bam##' | sed 's#BAMS_DIR/##' | sort -u); do sed "s#sample#${file}#g" SCRIPTS_DIR/4_callHaplotypes.submit > HAPLOCALL_SCRIPTSDIR/${file}_hap.submit; sbatch HAPLOCALL_SCRIPTSDIR/${file}_hap.submit; sleep 2; done
+
+## Load modules below
+module load tools/picard/2.25.7
+module load tools/samtools/1.17
+module load tools/gatk/4.2.5.0
+
+
+## Execute commands for application below
+alignment="ALIGNMENT"
+reference="REFERENCE"
+file="sample"
+
+## First add Read Group information if it doesn't already exist for that individual
+if [ ! -e BAMS_DIR/${file}HAPLOCALL_OUT.bam ]; then
+   echo "Adding read group information to ${file} and then indexing - $(date)"
+
+   ## Get read group info from the file name
+   RGID=$(echo ${file} | grep -Po 'L\d{3}')
+   RGLB=$(echo ${file} | grep -Po 'S\d+')
+   RGSM=$(echo ${file} | grep -Po '^[A-Za-z]+\_\d+')
+
+   ## Run AddOrReplaceReadGroups with the information pulled above
+   java -Xmx8G -jar /cm/shared/tools/picard/2.25.7/picard.jar AddOrReplaceReadGroups \
+      I=BAMS_DIR/${file}MARKDUP_OUT.bam \
+      O=BAMS_DIR/${file}HAPLOCALL_OUT.bam \
+      RGID=${RGID} \
+      RGLB=${RGLB} \
+      RGPL=illumina \
+      RGPU=unit1 \
+      RGSM=${RGSM}
+else
+   echo "${file} has already had read group information added - see BAMS_DIR/${file}_HAPLOCALL_OUT.bam"
+fi
+
+## Index the resulting read-group-added .bam
+if [ ! -e BAMS_DIR/${file}HAPLOCALL_OUT.bam.bai ]; then
+   samtools index BAMS_DIR/${file}HAPLOCALL_OUT.bam -o BAMS_DIR/${file}HAPLOCALL_OUT.bam.bai
+else
+   echo "${file}HAPLOCALL_OUT.bam has already been indexed - see BAMS_DIR/${file}HAPLOCALL_OUT.bam.bai"
+fi
+
+
+## Run HaplotypeCaller on the sample
+if [ ! -e HAPLOCALL_DIR/${file}HAPLOCALL_OUT.g.vcf.gz ]; then
+   echo "Running HaplotypeCaller on ${file} - $(date)"
+   gatk --java-options "-Xmx4g" HaplotypeCaller \
+      --native-pair-hmm-threads 4 \
+      -R ${reference} \
+      -I BAMS_DIR/${File}HAPLOCALL_OUT.bam \
+      -O HAPLOCALL_DIR/${file}HAPLOCALL_OUT.g.vcf.gz \
+      -ERC GVCF
+else
+   echo "${file} has already run through HaplotypeCaller - see HAPLOCALL_DIR/${file}HAPLOCALL_OUT.g.vcf"
+fi
+
+date

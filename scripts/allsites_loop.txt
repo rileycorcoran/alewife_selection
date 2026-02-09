@@ -1,0 +1,9 @@
+#Directly copied from Kelsie, modified for my own files in ./ashad_n110/by_population-allsites_final/1_variant_ashad_loop.txt
+
+the for loop
+for q in `cat pman_chromosomes.intervals_10000000`;
+do echo $q;
+chrom=`echo $q | cut -f1 -d":"`;
+echo $chrom;
+sed 's#chrName#'$chrom'#g' gatk_genotypeGVCFs_invariant.submit | sed 's#interval#'$q'#g' > gatk_genotypeGVCFs_$q'_invariant.submit';
+done

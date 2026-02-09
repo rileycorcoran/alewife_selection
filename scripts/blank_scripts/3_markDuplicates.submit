@@ -1,0 +1,101 @@
+#SBATCH --job-name=ALIGNMENT_markDup          # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL                       # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                            # a single CPU
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=10G
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=ALIGNTYPE_SCRIPTSDIR/3_markDuplicates_ALIGNMENT.out    # Standard output log
+#SBATCH --error=ALIGNTYPE_SCRIPTSDIR/3_markDuplicates_ALIGNMENT.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/picard/2.25.7
+module load tools/samtools/1.17
+module load tools/bamtools/2.5.1
+
+
+## Variables
+alignment="ALIGNMENT"
+
+bams_dir="BAMS_DIR"
+markdup_metrics_dir="${bams_dir}/markdup_metrics"
+mkdir -p ${markdup_metrics_dir}
+tmp_dir="TMP_DIR"
+mkdir -p ${tmp_dir}
+
+## Mark duplicates for each of the samples
+for file in $(ls ${bams_dir}/*ALIGN_OUT | sed -e "s#${bams_dir}##" -e 's\ALIGN_OUT\\' | sort -u); do
+   if [ ! -e ${markdup_dir}/${file}MARKDUP_OUT ]; then
+      echo "Running ${file} - $(date)"
+
+      java -Xmx8G -jar /cm/shared/tools/picard/2.25.7/picard.jar MarkDuplicates \
+         -I ${bams_dir}/${file}ALIGN_OUT \
+         -O ${bams_dir}/${file}MARKDUP_OUT \
+         --ASSUME_SORTED true \
+         --METRICS_FILE ${markdup_metrics_dir}/${file}_sorted.metrics.txt \
+         --VALIDATION_STRINGENCY SILENT \
+         --TMP_DIR ${tmp_dir}
+
+   else
+      echo "Duplicates-marked .bam file already created for ${file}"
+   fi
+done
+
+## Validate the .bams, and get mapping quality and coverage data for the files if desired
+reference="REFERENCE"
+samtools_stats_dir="SAMTOOLS_STATS_DIR"
+
+for file in $( ls ${markdup_dir}/${file}MARKDUP_OUT | sed -e "s#${markdup_dir}##" -e 's\.bam\\' | sort -u ); do
+   echo "Running ValidateSamFile and samtools stats on ${file}"
+
+   java -Xmx8G -jar /cm/shared/tools/picard/2.25.7/picard.jar ValidateSamFile \
+      I=${bams_dir}/${file}.bam \
+      O=${markdup_metrics_dir}/${file}
+      R=${reference} \
+      MODE=SUMMARY
+
+   samtools stats -r ${reference} ${bams_dir}/${file}.bam > ${samtools_stats_dir}/${file}_stats
+done
+
+## Compile samtools stats into multiqc file
+eval "$(conda shell.bash hook)"
+conda activate multiqc-env
+
+multiqc ${samtools_stats_dir}/ -o ${samtools_stats_dir}/multiqc/
+
+conda deactivate
+
+
+## Combine metrics data for ashad vs. ashad_replaced alignment comparison
+if [ ${alignment} == "ashad_replaced" ]; then
+   out_file="${markdup_metrics_dir}/markdup_metrics_comp"
+   if [ -e ${out_file}.tsv ]; then
+      rm ${out_file}.tsv
+   fi
+
+   ## Set up the headers for the comparison file - pulls them from a randomly chosen sample
+   touch ${out_file}_tmp.txt
+   for alignment_type in ashad ashad_replaced; do
+      echo ${alignment_type} >> ${out_file}_tmp.txt
+      sed -n '7p' ${markdup_metrics_dir}/Pat_10_S10_L001_paired_${alignment}_sorted.metrics.txt >> ${out_file}_tmp.txt
+   done
+
+   ## Import the data for the comparison file
+   for file in $(ls ${markdup_metrics_dir}/*_${alignment}_sorted.metrics.txt | sed -e 's\_${alignment}_sorted.metrics.txt\\' -e 's\${markdup_metrics_dir}/\\' | sort -u); do
+      for alignment_type in ashad ashad_replaced; do
+         echo ${file}_${alignment_type} >> ${out_file}_tmp.txt
+         sed -n '8p' ${alignment_type}/${file}_${alignment_type}_sorted.metrics.txt >> ${out_file}_tmp.txt
+      done
+   done
+
+   ## Convert newlines to tabs for easier viewing
+   paste - - - - < ${out_file}_tmp.txt > ${out_file}.tsv
+   rm ${out_file}_tmp.txt
+fi
+
+
+date

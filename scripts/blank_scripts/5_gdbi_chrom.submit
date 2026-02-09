@@ -1,0 +1,45 @@
+#!/bin/bash
+#SBATCH --job-name=gdbi_chrom		  # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=10G
+#SBATCH -t 3-00:00
+#SBATCH --array=1-25
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=GDBI_SCRIPTSDIR/5_gdbi_chrom.%A_%a.out    # Standard output log
+#SBATCH --error=GDBI_SCRIPTSDIR/gdbi_chrom.%A_%a.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/gatk/4.2.5.0
+
+
+## Setting up the reference used ("alignment") and appropriate directories
+gdbi_dir="GDBI_DIR"
+alignment="ALIGNMENT"
+
+## Setting up information to run this on an array - sets ${chrom} name based on the array index
+eval $(USER_DIR/bin/line_assign.submit $SLURM_ARRAY_TASK_ID ${gdbi_dir}/../numbered_chromosomes.tsv)
+
+
+## Running GDBImport across each chromosome with the array
+#  This code will run GDBI for each population group by adding in a `-V ${sample name}.g.vcf.gz` line for each individual
+for lake in Amos Bride Long Pat Quon; do
+   ## Make the appropriate output directory
+   if [ ! -d ${gdbi_dir}/${lake,} ]; then
+      mkdir -p ${gdbi_dir}/${lake,}
+   fi
+
+   gatk --java-options "-Xmx4g -Xms4g" GenomicsDBImport \
+      --batch-size 50 --reader-threads 2 --genomicsdb-shared-posixfs-optimizations \
+      $(awk 'NR>1 {printf(" -V %s.g.vcf.gz ", $2);}' ${gdbi_dir}/numbered_samples-${lake,}.txt) \
+      --genomicsdb-workspace-path ${gdbi_dir}/${lake,}/workspace_chrom_${chrom} \
+      --tmp-dir ${gdbi_dir}/tmp \
+      --intervals ${chrom}
+done
+
+date

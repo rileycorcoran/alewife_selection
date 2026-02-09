@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --job-name=align_mouse   	      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL       		      # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --cpus-per-task=8
+#SBATCH -t 14-00:00
+#SBATCH --mem=20G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=ALIGN_SCRIPTSDIR/2_align_ALIGNMENT_mouse.out    # Standard output log
+#SBATCH --error=ALIGN_SCRIPTSDIR/2_align_ALIGNMENT_mouse.err     # Standard error log
+
+date
+
+## Submission script
+## for lake in Amos Bride Long Pat Quon; do sed "s/mouse/${lake}/g" SCRIPTS_DIR/2_align.submit > ALIGN_SCRIPTSDIR/2_align_ALIGNMENT_${lake}.submit; sbatch ALIGN_SCRIPTSDIR/2_align_ALIGNMENT_${lake}.submit; done
+
+## Load modules below
+module load tools/bwa-mem2/2.0
+module load tools/samtools/1.17
+
+## Reference and directory variables
+alignment="ALIGNMENT"
+reference="REFERENCE"
+trim_dir="TRIM_DIR"
+bams_dir="BAMS_DIR"
+
+for file in $(ls ${trim_dir}/mouse_*_R1_paired.fastq.gz | sed -e "s#${trim_dir}/##" -e 's\_R1_paired.fastq.gz\\' | sort -u); do
+   if [ ! -e ${bams_dir}/${file}_paired_${alignment}_sorted.bam ]; then
+      echo "Aligning ${file} to the ${alignment} reference"
+      bwa-mem2 mem -M -t 8 ${reference} ${trim_dir}/${file}_R1_paired.fastq.gz ${trim_dir}/${file}_R2_paired.fastq.gz |
+      samtools view -u - |
+      samtools sort -l 9 - -o ${bams_dir}/${file}_paired_${alignment}_sorted.bam
+   else
+      echo "Aligned and sorted .bam for ${file} and the ${alignment} reference already exists"
+   fi
+done
+
+date

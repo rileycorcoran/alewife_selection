@@ -1,0 +1,161 @@
+#!/bin/bash
+#SBATCH --job-name=gen_filter      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=20G
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=ALIGNTYPE_SCRIPTSDIR/7_3_general_filtering.out    # Standard output log
+#SBATCH --error=ALIGNTYPE_SCRIPTSDIR/7_3_general_filtering.err     # Standard error log
+
+date
+
+
+## Load modules below
+
+module load tools/vcftools/0.1.17
+module load tools/samtools/1.17
+module load tools/htslib/1.13
+module load tools/bcftools/1.10.2
+module load tools/gatk/4.2.5.0
+
+## Set up alignment data
+alignment="ALIGNMENT"
+alignment_folder="FINAL_VCF_DIR"
+reference="REFERENCE"
+in_dir="GENOTYPEGVCF_DIR"
+in_file="GENOTYPEGVCF_MERGE"
+out_dir="FINAL_VCF_DIR"
+out_filters="OUT_FILTERS"
+
+
+### Starting with Hard Filtering ###
+echo "Beginning to add hard-filters: $(date)"
+gatk VariantFiltration \
+    -R ${reference} \
+    -V ${in_dir}/${in_file}.vcf.gz \
+    -filter "QD < 2.0" --filter-name "QD2" \
+    -filter "FS > 60.0" --filter-name "FS60" \
+    -filter "MQ < 40.0" --filter-name "MQ40" \
+    -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
+    -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" \
+    -O ${out_dir}/${in_file}_filters.vcf.gz \
+    --tmp-dir ./../gatk_tmp \
+    --verbosity ERROR
+echo "tail 7_general_filtering.err -n 20"
+tail ALIGNTYPE_SCRIPTSDIR/7_general_filtering.err -n 20
+echo ""
+
+
+### Removing the hard-filtered sites and restricting to SNPs only ###
+out_step=$(echo ${out_filters} | awk  -v OFS="_" -F_ '{print $1, $2}')
+out_hardF="${out_dir}/${in_file}_${out_step}"
+
+echo "Removing hard-filtered sites and keeping only SNPs: $(date)"
+gatk SelectVariants \
+     -R ${reference} \
+     -V ${out_dir}/${in_file}_filters.vcf.gz \
+     --select-type-to-include SNP \
+     --exclude-filtered \
+     -O ${out_hardF}.vcf.gz \
+     --tmp-dir TMP_DIR
+echo "tail 7_general_filtering.err -n 20"
+tail ALIGNTYPE_SCRIPTSDIR/7_general_filtering.err -n 20
+echo ""
+
+
+## Removing the flagged file after using it because it is massive (~140Gb)
+if [ -e ${out_dir}/${in_file}_filters.vcf.gz ]; then rm ${out_dir}/${in_file}_filters.vcf.gz; fi
+if [ -e ${out_dir}/${in_file}_filters.vcf.gz.tbi ]; then rm ${out_dir}/${in_file}_filters.vcf.gz.tbi; fi
+
+
+
+### Now Genotype/Site Quality Filters ###
+## This will perform all quality filters I need:
+##    Remove bad quality genotypes: --minGQ 20
+##    Remove low depth genotypes: --minDP 5
+##    Remove non-biallelic sites: --min-alleles 2 --max-alleles 2
+##    Remove high-depth sites: --max-meanDP 16
+##    Remove putative paralogues: --exclude filtercheck/hardfiltered_hdplot_h06_d7_snps.txt
+
+out_step=$(echo ${out_final} | awk -v OFS="_" -F_ '{print $3, $4}')
+out_QF="${out_hardF}_${out_step}"
+
+echo "Quality filtering: $(date)"
+vcftools --gzvcf ${out_hardF}.vcf.gz \
+   --out ${out_QF} \
+   --minGQ 20 \
+   --minDP 5 \
+   --min-alleles 2 \
+   --max-alleles 2 \
+   --max-meanDP 16 \
+   --exclude-positions filtercheck/hardfiltered_hdplot_h06_d7_snps.txt \
+   --recode-INFO-all \
+   --recode
+echo "tail 7_general_filtering.err -n 20"
+tail ALIGNTYPE_SCRIPTSDIR/7_general_filtering.err -n 20
+echo ""
+
+
+## Making an index for running further GATK programs
+bgzip -c ${out_QF}.recode.vcf > ${out_QF}.recode.vcf.gz
+rm ${out_QF}.recode.vcf
+gatk IndexFeatureFile -I ${out_QF}.recode.vcf.gz --tmp-dir ./../gatk_tmp
+
+
+
+### Removing bad individuals (Amos_28 and Quon_17) ###
+out_step=$(echo ${out_final} | awk -F_ '{print $5}')
+out_rmIndv="${out_QF}_${out_step}"
+
+echo "Removing A28, Q17, and Q1: $(date)"
+gatk SelectVariants \
+     -R ${reference} \
+     -V ${out_QF}.recode.vcf.gz \
+     --exclude-sample-name Amos_28 \
+     --exclude-sample-name Quon_17 \
+     --exclude-sample-name Quon_1 \
+     -O ${out_rmIndv}.recode.vcf.gz \
+     --tmp-dir ./../gatk_tmp
+echo "tail 7_general_filtering.err -n 20"
+tail ALIGNTYPE_SCRIPTSDIR/7_general_filtering.err -n 20
+echo ""
+
+
+
+
+### FastaAlternateReferenceMaker ###
+
+if [ ! -f BASE_REF_replaced.fna ]; then
+
+   ## First get list of SNPs that have ref_freq = 0
+   vcftools --gzvcf ${out_hardF}.vcf.gz --freq --out ${out_hardF}
+
+   ## Now make a positions file of all SNPs remaining that are homozygous alternate
+   Rscript ALIGNTYPE_SCRIPTSDIR/7_remove_fixedAlt_snps.R ${out_hardF}
+
+   ## Run vcftools to create a .vcf file with only the sites where no one had the reference allele and replace with the highest frequency alternate
+   vcftools --gzvcf ${out_hardF}.vcf.gz \
+            --out ${out_hardF}_refhom_zero \
+            --exclude-positions ${out_hardF}_fixedAlt_snps_vcftools.txt \
+            --min-alleles 2 \
+            --max-alleles 2 \
+            --remove-indels \
+            --recode-INFO-all \
+            --recode
+
+   ## Run FastaAlternateReferenceMaker with the .vcf containing the alternate SNP to replace
+   gatk FastaAlternateReferenceMaker \
+      -R BASE_REF.fna \
+      -O BASE_REF_replaced.fna \
+      -L input.intervals \
+      -V ${out_hardF}_refhom_zero.recode.vcf \
+else
+   echo "Edited reference file already created (located at BASE_REF_replaced.fna), moving on to analyses"
+fi
+
+
+date

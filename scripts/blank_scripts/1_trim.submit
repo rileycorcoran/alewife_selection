@@ -1,0 +1,54 @@
+#!/bin/bash
+#SBATCH --job-name=trim                       # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL                       # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH -t 3-00:00
+#SBATCH --mem=10G
+#SBATCH --cpus-per-task=4                  # number of cores (threads)
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=SCRIPTS_DIR/1_trim.out    # Standard output log
+#SBATCH --error=SCRIPTS_DIR/1_trim.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/trimmomatic/0.39
+module load tools/fastqc/0.11.9
+
+## Directory variables
+raw_reads_dir="RAW_READS_DIR"
+trim_dir="TRIM_DIR"
+fastqc_dir="FASTQC_DIR"
+
+## First run FastQC on the raw reads
+mkdir -p ${fastqc_dir}/raw
+fastqc -t 2 -o ${fastqc_dir}/raw/ ${raw_reads_dir}*.fastq.gz
+
+
+## Trim the raw reads
+for file in $(ls ${raw_reads_dir}/*.fastq.gz | sed -e "s#${raw_reads_dir}/##" -e 's/[1-2]_001.fastq.gz//' | sort -u); do
+   echo "Trimming ${file}"
+
+   java -jar /cm/shared/tools/trimmomatic/0.39/trimmomatic-0.39.jar PE \
+      -phred33 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36 \
+      ${raw_reads_dir}/${file}1_001.fastq.gz ${raw_reads_dir}/${file}2_001.fastq.gz \
+      ${trim_dir}/${file}1_paired.fastq.gz ${trim_dir}/${file}1_unpaired.fastq.gz \
+      ${trim_dir}/${file}2_paired.fastq.gz ${trim_dir}/${file}2_unpaired.fastq.gz
+done
+
+
+## Then run FastQC on the trimmed reads to see how trimming affected the scores
+mkdir -p ${fastqc_dir}/trimmed
+fastqc -t 2 -o ${fastqc_dir}/trimmed/ ${trim_dir}/*.fastq.gz
+
+
+## Run MultiQC on all the FastQC files - raw and trimmed (separately)
+eval "$(conda shell.bash hook)"
+conda activate multiqc-env
+
+multiqc	${fastqc_dir}/trimmed/* -o ${fastqc_dir}/trimmed/
+multiqc ${fastqc_dir}/raw/* -o ${fastqc_dir}/raw/
+
+
+date

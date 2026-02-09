@@ -1,0 +1,49 @@
+#!/bin/bash
+#SBATCH --job-name=checkfilter      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=10G
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=ALIGNTYPE/7_1_checkfilter-by_population.out    # Standard output log
+#SBATCH --error=ALIGNTYPE/7_1_checkfilter-by_population.err     # Standard error log
+
+date
+
+
+## Load modules below
+module load tools/vcftools/0.1.17
+
+alignment="ALIGNMENT"
+in_file="GENOTYPEGVCF_MERGE"
+out_file="filtercheck_${in_file}"
+out_dir="FINAL_VCF_DIR/${alignment}_n108/filtercheck/"
+if [ ! -d ${out_dir} ]; then mkdir -p ${out_dir}; fi
+
+## All of the flags:
+for flag in missing-indv missing-site depth site-depth site-mean-depth site-quality site-pi 012 hardy het; do
+   vcftools --gzvcf ${in_file}.vcf.gz \
+      --${flag} \
+      --out ${out_dir}${out_file}
+done
+
+## Creating meanDP and het ratio files for the hard-filtered dataset to use for HDPlot
+for flag in site-mean-depth hardy; do
+   vcftools --gzvcf ${out_dir}../${in_file}_snps_gatkrec_maxMissing75_rmA28Q17_hardfiltered.vcf.gz \
+      --${flag} \
+      --out ${out_dir}${out_file}_snps_gatkrec_maxMissing75_rmA28Q17_hardfiltered
+done
+
+
+## for lake in amos bride long pat quon; do
+##    for flag in missing-site site-depth site-pi 012; do
+##       vcftools --gzvcf all_chrom_scaffolds_allsites_${lake}.vcf.gz \
+##          --${flag} \
+##          --out ${out_dir}filtercheck_allsites_bylake-vc_${lake}
+##      done
+## done
+
+date

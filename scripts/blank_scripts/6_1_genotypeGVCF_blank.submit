@@ -1,0 +1,44 @@
+#!/bin/bash
+#SBATCH --job-name=gvcf_INTERVAL
+#SBATCH -p defq
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=riley.corcoran@du.edu
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=40G
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=VARIANTCALL_SCRIPTSDIR/6_1_genotypeGVCF_INTERVAL.out
+#SBATCH --error=VARIANTCALL_SCRIPTSDIR/6_1_genotypeGVCF_INTERVAL.err
+
+date
+
+## Load modules below
+module load tools/gatk/4.2.5.0
+
+alignment="ALIGNMENT"
+
+### Batch submission scripts adapted from one by Kelsie Hunnicutt ###
+## For chromosomes: where q is chrom:interval, and chrom is just the chromosome name
+# for q in $(cat SCRIPTS_DIR/6_chrom_intervals_10000000.txt); do echo ${q}; chrom=$(echo ${q} | cut -f1 -d":"); echo ${chrom}; sed 's#CHRNAME#'${chrom}'#g' SCRIPTS_DIR/6_1_genotypeGVCF_blank.submit | sed 's#INTERVAL#'${q}'#g' > GENOTYPEGVCF_SCRIPTS_DIR/6_1_genotypeGVCF_${q}'.submit'; done
+
+## For Scaffolds: No intervals necessary for scaffolds, as the GD is the full scaffold name; this will remove the interval line as well
+# for scaff in $(cat SCRIPTS_DIR/6_scaffolds.tsv); do echo ${scaff}; sed 's#chrom_CHRNAME#scaffold_'${scaff}'#g' SCRIPTS_DIR/6_1_genotypeGVCF_blank.submit | sed 's#^   -L INTERVAL \ $##g' > GENOTYPEGVCF_SCRIPTS_DIR/6_1_genotypeGVCF_${scaff}'.submit'; done
+
+
+## This will run GenotypeGVCFs per chromosome, per population, retaining all sites as all sites are
+## needed for pixy (invariant sites that aren't needed for other analyses will be removed later)
+for lake in amos bride long pat quon; do
+   out_dir="GENOTYPEGVCF_DIR/${lake}"
+   if [ ! -d ${out_dir} ]; then mkdir -p ${out_dir}; fi
+
+   gatk --java-options "-Xmx50g" GenotypeGVCFs \
+      -R REFERENCE \
+      -V gendb://GDBI_DIR/${lake}/workspace_chrom_CHRNAME \
+      -all-sites \
+      -L INTERVAL \
+      -O ${out_dir}/INTERVAL_allsites_${lake}.vcf.gz \
+      --tmp-dir ${out_dir}/../tmp
+done
+
+date

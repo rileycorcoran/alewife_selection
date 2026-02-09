@@ -1,0 +1,66 @@
+#!/bin/bash
+#SBATCH --job-name=vcf_concat_index      # Job name
+#SBATCH -p bigmem
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=8
+#SBATCH -t 3-00:00
+#SBATCH --mem=100G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=ALIGNTYPE_SCRIPTSDIR/6_genotypeGVCF_concat_index.out    # Standard output log
+#SBATCH --error=ALIGNTYPE_SCRIPTSDIR/6_genotypeGVCF_concat_index.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/bcftools/1.10.2
+module load tools/gatk/4.2.5.0
+
+
+## To create the separate lake .vcf.gz files:
+for lake in amos bride long pat quon; do
+   out_file="GENOTYPEGVCF_DIR/GENOTYPEGVCF_OUT_${lake}_allsites.vcf.gz"
+
+   ## Concatonate the chromosome-specific files:
+   if [ ! -f ${out_file} ]; then
+      bcftools concat --threads 2 -O z GENOTYPEGVCF_DIR/${lake}/N*.vcf.gz > ${out_file}
+   else
+      echo "Concatonated ${lake}-specific .vcf already created"
+   fi
+
+   ## BCFtools-index the newly-made file:
+   if [ ! -f ${out_file}.csi ]; then
+      bcftools index --threads 2 ${out_file}
+   else
+      echo "${out_file} already indexed by BCFtools (.csi)"
+   fi
+
+   ## GATK-index the newly-made file:
+   if [ ! -f ${out_file}.tbi ]; then
+      gatk IndexFeatureFile -I ${out_file}
+   else
+      echo "${out_file} already indexed by GATK (.tbi)"
+   fi
+done
+
+## To merge all 5 final .vcf.gz files together into one for analyses/filtering:
+out_file="GENOTYPEGVCF_DIR/GENOTYPEGVCF_MERGE.vcf.gz"
+bcftools merge --threads 2 -O z GENOTYPEGVCF_OUT_*_allsites.vcf.gz > ${out_file}
+
+## Last indexes for the merged files:
+bcftools index --threads 2 ${out_file}
+gatk IndexFeatureFile -I ${out_file}
+
+## Validate the new vcf files:
+for file in $( ls GENOTYPEGVCF_DIR/*.vcf.gz | sort -u ); do
+   echo ${file}
+
+   gatk ValidateVariants \
+      -V ${file} \
+      -R REFERENCE \
+      --validation-type-to-exclude ALLELES \
+      --warn-on-errors TRUE
+done
+
+date
