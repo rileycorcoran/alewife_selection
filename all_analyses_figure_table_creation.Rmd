@@ -1,0 +1,2960 @@
+---
+title: "manuscript"
+author: "RC"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("/Users/corcorri/Documents/Denver/Manuscript")
+sessionInfo()
+```
+
+``` {r Libraries}
+suppressPackageStartupMessages({
+  library(tidyr)
+  library(dplyr)
+  library(ggplot2)
+  library(cowplot)
+  library(tidyverse)
+  library(plotly)
+  library(plyr)
+  library(data.table)
+  library(gprofiler2)
+  library(stats)
+})
+```
+
+``` {r Commonly used Colors and Variables}
+## Colors
+amos_col <- "#1D3203"
+bride_col <- "#1855F2"
+long_col <- "#496E12"
+pat_col <- "#A0E72F"
+quon_col <- "#74AB20"
+colors <- c(bride_col, amos_col, long_col, quon_col, pat_col)
+l_colors <- c(amos_col, long_col, quon_col, pat_col)
+
+chrom1 <- "grey75"
+chrom2 <- "grey25"
+
+two_lakes_col <- "#E5A4CB"
+three_lakes_col <- "#B53084"
+four_lakes_col <- "#45062E"
+
+## Folders
+out_dir <- "./../Manuscript/r_figures/"
+
+## Misc
+chroms <- data.frame(
+  chr=c("NC_014690.1", "NC_055980.1", "NC_055979.1", "NC_055978.1", "NC_055977.1", "NC_055976.1", "NC_055975.1", "NC_055974.1", "NC_055973.1", "NC_055972.1", "NC_055971.1", "NC_055970.1", "NC_055969.1", "NC_055968.1", "NC_055967.1", "NC_055966.1", "NC_055965.1", "NC_055964.1", "NC_055963.1", "NC_055962.1", "NC_055961.1", "NC_055960.1", "NC_055959.1", "NC_055958.1", "NC_055957.1"),
+  chr_num=seq(25,1))
+chrom_length <- read.table("./chrom_length.tsv", header=TRUE, sep="\t")
+
+all_lakes <- c("bride", "amos", "long", "quon", "pat")
+l_lakes <- c("amos", "long", "quon", "pat")
+```
+
+
+``` {r Figure 1 - Map, PCA, FST corrplot}
+#### Map ####
+library(sf)
+library(ggspatial)
+
+NE_outline <- map_data('state', region=c("Connecticut", "New York", "Massachusetts", "Rhode Island", "Pennsylvania", "New Jersey", "Vermont", "New Hampshire", "Maine", "Maryland", "Delaware")) %>% 
+  select(lon=long, lat, group, id=subregion)
+
+USLakes <- read_sf("USA_Detailed_Water_Bodies.shp")
+rivers <- subset(USLakes, FTYPE == "Stream/River")
+mylakes <- subset(USLakes, FTYPE == "Lake/Pond" & NAME == "Bride Lake" | NAME == "Pattagansett Lake" | NAME == "Amos Lake" | NAME == "Long Pond" | NAME == "Quonnipaug Lake" | NAME == "Rogers Lake")
+
+sf_use_s2(TRUE)
+Conn_shp <- st_read('statect_37800_0000_1995_s250_ctdep_1_shp_wgs84.shp')
+Conn_sf <- st_as_sf(Conn_shp)
+Conn_sf$geometry <- Conn_sf$geometry %>%
+  s2::s2_rebuild() %>%
+  sf::st_as_sfc() %>%
+  sf::st_make_valid()
+
+rivers_sf <- st_as_sf(rivers)
+sf_use_s2(FALSE)
+rivers_sf <- st_make_valid(rivers_sf, NA_on_exception=TRUE)
+
+Conn_lakes <- st_intersection(mylakes, Conn_sf)
+Conn_rivers <- st_intersection(rivers_sf, Conn_sf)
+Conn_water <- st_union(Conn_lakes, Conn_rivers)
+
+## Make the zoom into Connecticut sampling lakes
+Connecticut_zoom <- ggplot() + 
+  geom_sf(data=Conn_sf, fill="white") + 
+  geom_sf(data=Conn_water) + 
+  scale_x_continuous(limits=c(-72.8, -71.9)) + 
+  scale_y_continuous(limits=c(41.25, 41.55)) +
+  theme_void() + 
+  theme(panel.border=element_rect(colour="black", fill=NA)) +
+  annotation_scale() + 
+  annotation_north_arrow(location="tl", which_north="true", style=north_arrow_orienteering)
+
+## Make the whole plot, including the NE states
+NE_map <- ggplot(data=NE_outline, aes(x=lon, y=lat, group=group)) + 
+  geom_polygon(fill="#e2ecdf", color="black", linewidth=0.3) +
+  scale_x_continuous(limits=c(-80.54, -59)) + 
+  scale_y_continuous(limits=c(37.5, 47.46956)) +
+  theme_void() +  
+  annotate("rect", xmin=-72.8, xmax=-71.9, ymin=41.25, ymax=41.55, color="black", linewidth=0.5, alpha=0) +
+  annotate("segment", x=-72.8, y=41.25, xend=-80, yend=37.5, linewidth=0.5) +
+  annotate("segment", x=-71.9, y=41.25, xend=-59, yend=37.5, linewidth=0.5) +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), 
+        axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+lakes_map <- plot_grid(NE_map, Connecticut_zoom, nrow=2, rel_heights=c(1,0.5))
+lakes_map
+ggsave(paste0(out_dir, "Sampling_map_scalebar.pdf"), lakes_map, width=10, height=8)
+
+detach("package:ggspatial", unload=TRUE)
+
+
+
+#### PCA ####
+library(pcadapt)
+for ( test in c("all", "LDthin") ) {
+  if ( test == "all") {
+    pcadapt_args <- NULL
+    allsites_newfilters <- read.pcadapt("./pcadapt/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10.recode.bed", type="bed")
+  } else {
+    pcadapt_args <- list(size=50, thr=0.2)
+    allsites_newfilters <- read.pcadapt("./pcadapt/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10.recode.bed", type="bed")
+  }
+  
+  allsites_pcadapt <- pcadapt(allsites_newfilters, K=20, min.maf=0.01, LD.clumping=pcadapt_args)
+  
+  allsites_screeplot <- plot(allsites_pcadapt, option = "screeplot")  #Viewing what the best K is (should be 4) - K=4 is the last before it flattens out
+  # To see the exact values for variance explained
+  ggplotly(allsites_screeplot)
+  ggsave(paste0(out_dir, "allsites_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_screeplot_K20_MAF001_", test,".pdf"), plot = allsites_screeplot)
+  
+  
+  ### START HERE IF K=20 SCREEPLOT ISN'T NEEDED: ###
+  allsites_pcadapt <- pcadapt(allsites_newfilters, K=4, min.maf=0.01, LD.clumping=pcadapt_args) ## Bringing the K down to the minimum needed
+  ## Get the variance explained values for PC 1-4
+  for (pc in c(1,2,3,4)) {
+    assign(paste0("pc", pc, "_value"), round(allsites_pcadapt$singular.values[[pc]]^2*100, digits=2)) ## Equation from observing points with ggplotly
+  }
+  
+  # With integers - Necessary if you want to be able to label your individuals/populations
+  poplist.names <- c(rep("Amos", 20), rep("Bride", 30), rep("Long", 20), rep("Pat", 19), rep("Quon", 18))
+  indiv_list <- c("Amos_10", "Amos_11", "Amos_12", "Amos_13", "Amos_16", "Amos_17", "Amos_18", "Amos_19", "Amos_20", "Amos_22", "Amos_23", "Amos_25", "Amos_26", "Amos_3", "Amos_4", "Amos_5", "Amos_6", "Amos_7", "Amos_8", "Amos_9",
+                  "Bride_1", "Bride_10", "Bride_11", "Bride_12", "Bride_13", "Bride_14", "Bride_15", "Bride_16", "Bride_17", "Bride_18", "Bride_19", "Bride_2", "Bride_20", "Bride_21", "Bride_22", "Bride_23", "Bride_24", "Bride_25", "Bride_26", "Bride_27", "Bride_28", "Bride_29", "Bride_3", "Bride_30", "Bride_4", "Bride_5", "Bride_6", "Bride_7", "Bride_8", "Bride_9",
+                  "Long_11", "Long_12", "Long_14", "Long_15", "Long_16", "Long_18", "Long_19", "Long_2",  "Long_20", "Long_22", "Long_23", "Long_25", "Long_26", "Long_27", "Long_28", "Long_3", "Long_30", "Long_7", "Long_8", "Long_9",
+                  "Pat_1", "Pat_10", "Pat_11", "Pat_12", "Pat_13", "Pat_14", "Pat_15", "Pat_16", "Pat_17", "Pat_18", "Pat_19", "Pat_2", "Pat_3", "Pat_4", "Pat_5", "Pat_6", "Pat_7", "Pat_8", "Pat_9",
+                  "Quon_10", "Quon_12", "Quon_13", "Quon_18", "Quon_19", "Quon_2", "Quon_20", "Quon_21", "Quon_25", "Quon_26", "Quon_27", "Quon_28", "Quon_3", "Quon_4", "Quon_5", "Quon_6", "Quon_8", "Quon_9")
+  
+  allsites_pcadapt_scores <- as.data.frame.matrix(allsites_pcadapt$scores) %>%
+    cbind(., poplist.names, indiv_list) %>%
+    rename_with(~c("pc1", "pc2", "pc3", "pc4", "lake", "indiv")) %>%
+    mutate(lake = factor(lake, levels=c("Bride", "Amos", "Long", "Quon", "Pat")))
+  
+  ## Actually plotting the PCA
+  xlim12 <- c(min(allsites_pcadapt_scores$pc1)-0.05, max(allsites_pcadapt_scores$pc1)+0.05)
+  ylim12 <- c(min(allsites_pcadapt_scores$pc2)-0.05, max(allsites_pcadapt_scores$pc2)+0.05)
+  xlim34 <- c(min(allsites_pcadapt_scores$pc3)-0.05, max(allsites_pcadapt_scores$pc3)+0.05)
+  ylim34 <- c(min(allsites_pcadapt_scores$pc4)-0.05, max(allsites_pcadapt_scores$pc4)+0.05)
+  
+  allsites_ggplot_12 <- ggplot(allsites_pcadapt_scores, aes(x=pc1, y=pc2, color=lake, fill=lake)) +
+    geom_hline(aes(yintercept=0), col="black") +
+    geom_vline(aes(xintercept=0), col="black") +
+    geom_point(size=2.2) +
+    scale_color_manual(values=colors) +
+    scale_fill_manual(values=colors) +
+    scale_x_continuous(name=paste0("PC1 (", pc1_value, "%)"), limits=xlim12) + 
+    scale_y_continuous(name=paste0("PC2 (", pc2_value, "%)"), limits=ylim12) +  
+    theme_cowplot() + 
+    theme(legend.position="none", legend.text=element_text(size=15), legend.title=element_text(size=20), axis.text=element_text(size=10), axis.title=element_text(size=15))
+  ggplotly(allsites_ggplot_12)
+  
+  allsites_ggplot_34 <- ggplot(allsites_pcadapt_scores, aes(x=pc3, y=pc4, color=lake, fill=lake)) +
+    geom_hline(aes(yintercept=0), col="black") +
+    geom_vline(aes(xintercept=0), col="black") +
+    geom_point(size=2.2) + 
+    scale_color_manual(values=colors) +
+    scale_fill_manual(values=colors) +
+    scale_x_continuous(name=paste0("PC3 (", pc3_value, "%)"), limits=xlim34) + 
+    scale_y_continuous(name=paste0("PC4 (", pc4_value, "%)"), limits=ylim34) +
+    theme_cowplot() + 
+    theme(legend.text=element_text(size=15), legend.title=element_text(size=20), axis.text=element_text(size=10), axis.title=element_text(size=15))
+  
+  allsites_grid <- plot_grid(allsites_ggplot_12, allsites_ggplot_34, nrow=1, align="h", rel_widths=c(1, 1.3))
+  allsites_grid
+  ggsave(paste0(out_dir, "allsites_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_ggplot_pcas_MAF001_", test, "50_02.pdf"), allsites_grid, width=11, height=5)
+  
+  if ( test == "all" ) {
+    allsites_ggplot_12_zoom <- ggplot(allsites_pcadapt_scores, aes(x=pc1, y=pc2, color=lake, fill=lake)) +
+      geom_hline(aes(yintercept=0), col="black") +
+      geom_vline(aes(xintercept=0), col="black") +
+      geom_point(size=2.2) +
+      scale_color_manual(values=colors) +
+      scale_fill_manual(values=colors) +
+      theme_cowplot() + 
+      scale_x_continuous(name="PC1", limits=c(0.05,0.095)) + 
+      scale_y_continuous(name="PC2", limits=c(-0.05,0.025)) +
+      theme(legend.position="none", legend.text=element_text(size=15), legend.title=element_text(size=20), 
+            axis.text=element_text(size=10), axis.title=element_text(size=15))
+    allsites_ggplot_12_zoom
+    #ggsave(paste0(out_dir, "allsites_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_ggplot_pca12_zoom_MAF001_", test, ".pdf"), allsites_ggplot_12_zoom, width=5, height=4)
+  }
+}
+
+detach("package:pcadapt", unload=TRUE)
+
+
+
+#### FST Corrplot ####
+library(corrplot)
+wc_fst <- read.table("./popgen_stats/fst/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_wc.fst.summary", header=FALSE)
+
+wc_reordered <- data.frame(1:5, 1:5, 1:5, 1:5, 1:5, row.names=all_lakes)
+colnames(wc_reordered) <- all_lakes
+for (rowlake in all_lakes) {
+  for (collake in all_lakes) {
+    if ( rowlake != collake ) {
+      wc_reordered[rowlake, collake] <- subset(wc_fst, (V1 %in% rowlake & V2 %in% collake) | (V2 %in% rowlake & V1 %in% collake))$V3
+    } else { wc_reordered[rowlake, collake] <- NA }
+  }
+}
+wc_reordered <- as.matrix(wc_reordered)
+
+col <- colorRampPalette(c("#BCC7C8", "#6E8587", "#2E3738"))(10)
+pdf(paste0(out_dir, "plink_pairwise_fst_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10.pdf"), height=6, width=6)
+fst_corrplot <- corrplot(wc_reordered, method="circle", is.corr=FALSE, type="lower", col=col, col.lim=c(0.15, 0.45), tl.col="black", tl.srt=0, cl.pos="r", addCoef.col = 'black')
+fst_corrplot
+dev.off()
+
+write.table(wc_reordered, paste0(out_dir, "plink_fst_table_s1.txt"), quote=FALSE, row.names=TRUE, col.names=TRUE, sep="\t")
+
+detach("package:corrplot", unload=TRUE)
+```
+
+
+``` {r Figure 2 & Table S2 - Population Demography}
+## Table S1 set-up
+table_s1 <- data.frame("fst"=rep(NA,6), "pi"=rep(NA,6), "td"=rep(NA,6), "ho"=rep(NA,6), "he"=rep(NA,6), "he.ho"=rep(NA,6), "roh_length"=rep(NA,6), "froh"=rep(NA,6), "fis"=rep(NA,6), row.names=c(all_lakes, "anova"))
+
+
+#### $\pi$ and FST ####
+for ( test in c("pi", "fst")) local({
+  if ( test %in% "pi" ) {
+    col_name <- "avg_pi"
+    names_from <- "pop"
+    lakes_loop <- all_lakes
+  } else if ( test %in% "fst") {
+    col_name <- "avg_wc_fst"
+    names_from <- c("pop1", "pop2")
+    lakes_loop <- l_lakes
+  }
+  
+  file_list <- list.files(path=paste0("/Users/corcorri/Documents/Denver/Manuscript/popgen_stats/pixy_files/", test), pattern="\\.txt$", full.names=TRUE)
+  data_list <- lapply(file_list, function(file) { read.table(file, header=TRUE, sep="\t", stringsAsFactors=FALSE) })
+  combined_data <- do.call(rbind, data_list)
+  assign(paste("all", test, "long", sep="_"), combined_data, pos=1)
+  
+  data_pivot <- pivot_wider(combined_data, id_cols=c("chromosome", "window_pos_1", "window_pos_2"), names_from=all_of(names_from), values_from=col_name)
+  colnames(data_pivot) <- tolower(colnames(data_pivot))
+  
+  if ( test %in% "fst" ) {
+    data_pivot <- cbind(data_pivot[,1:3], data_pivot[,grepl("bride", colnames(data_pivot))])
+  }
+  
+  for ( lake in lakes_loop ) {
+    test_df <- data_pivot[,c("chromosome", "window_pos_1", "window_pos_2", colnames(data_pivot[which(grepl(lake, colnames(data_pivot)))]))] %>%
+      mutate(window_pos_1 = as.numeric(window_pos_1), 
+             window_pos_2 = as.numeric(window_pos_2)) %>%
+      rename_with(~"avg_value", colnames(.)[4]) %>%
+      merge(., chroms, by.x="chromosome", by.y="chr") %>%
+      mutate(chr_num = as.factor(chr_num)) %>%
+      filter(!is.na(avg_value))
+    
+    ## Running calculations to fill Table S2 
+    table_s1[lake,test] <- signif(mean(test_df$avg_value), 3)
+    assign("table_s1", table_s1, pos=1)
+  }
+  
+  ## ANOVA
+  data_pivot_simplified <- data_pivot %>%
+    select(-c("chromosome", "window_pos_1", "window_pos_2")) %>%
+    rename_with(~lakes_loop)
+  data_stacked <- na.omit(stack(data_pivot_simplified))
+
+  data_anova <- anova(lm(values ~ ind, data_stacked))
+  print(TukeyHSD(aov(values ~ ind, data_stacked)), pos=1)
+  ## Pi                 diff           lwr           upr     p adj
+  # amos-bride  1.696170e-05  1.074367e-05  2.317973e-05 0.0000000 ***
+  # long-bride -9.588048e-06 -1.580608e-05 -3.370017e-06 0.0002515 ***
+  # quon-bride  7.044534e-05  6.422730e-05  7.666337e-05 0.0000000 ***
+  # pat-bride  -5.048918e-05 -5.670721e-05 -4.427115e-05 0.0000000 ***
+  # long-amos  -2.654975e-05 -3.276778e-05 -2.033172e-05 0.0000000 ***
+  # quon-amos   5.348364e-05  4.726561e-05  5.970167e-05 0.0000000 ***
+  # pat-amos   -6.745088e-05 -7.366891e-05 -6.123285e-05 0.0000000 ***
+  # quon-long   8.003338e-05  7.381535e-05  8.625141e-05 0.0000000 ***
+  # pat-long   -4.090113e-05 -4.711917e-05 -3.468310e-05 0.0000000 ***
+  # pat-quon   -1.209345e-04 -1.271525e-04 -1.147165e-04 0.0000000 ***
+  
+  ## FST              diff          lwr           upr     p adj
+  # long-amos -0.004533741 -0.008195943 -0.0008715394 0.0080168 ***
+  # quon-amos -0.067216405 -0.070878661 -0.0635541501 0.0000000 ***
+  # pat-amos  -0.051682031 -0.055343912 -0.0480201495 0.0000000 ***
+  # quon-long -0.062682664 -0.066344652 -0.0590206761 0.0000000 ***
+  # pat-long  -0.047148290 -0.050809904 -0.0434866755 0.0000000 ***
+  # pat-quon   0.015534375  0.011872707  0.0191960421 0.0000000 ***
+  # assign("table_s1", table_s1, pos=1)
+})
+
+## Graphing windowed pi results:
+pi_boxplot <- all_pi_long %>%
+  mutate(pop = factor(tolower(pop), levels=all_lakes)) %>%
+  filter(!is.na(avg_pi)) %>%
+  ggplot(aes(x=pop, y=avg_pi, color=pop, fill=pop)) + 
+    geom_boxplot(alpha=0.5) + 
+    geom_violin() + 
+    scale_y_continuous(limits=c(0,0.00075)) +
+    scale_color_manual(values=colors) + 
+    scale_fill_manual(values=colors) + 
+    theme_cowplot()
+pi_boxplot
+
+
+
+#### Tajima's D ####
+for ( lake in all_lakes ) local({
+  lake <- lake
+  example <- read.table(paste("./popgen_stats/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1", lake, "maxMissing75_HWE1e-10_50kb.Tajima.D", sep="_"), header=TRUE, sep="\t") %>%
+    mutate(pop = lake) %>%
+    merge(., chroms, by.x="CHROM", by.y="chr")
+  assign(value=example, x=paste(lake, "td", sep="_"), pos=1)
+
+  table_s1[lake, "td"] <- signif(mean(example$TajimaD, na.rm=TRUE), 3)
+  assign("table_s1", table_s1, pos=1)
+})
+
+## Graphing windowed td results:
+td_boxplot <- rbind(bride_td, amos_td, long_td, quon_td, pat_td) %>%
+  mutate(pop = factor(tolower(pop), levels=all_lakes)) %>%
+  filter(!is.na(TajimaD)) %>%
+  ggplot(aes(x=pop, y=TajimaD, color=pop, fill=pop)) + 
+    geom_boxplot(alpha=0.5) + 
+    geom_violin(alpha=0.7) + 
+    scale_y_continuous(limits=c(-3, 4.5)) +
+    scale_color_manual(values=colors) + 
+    scale_fill_manual(values=colors) + 
+    theme_cowplot()
+td_boxplot
+
+## ANOVA
+anova(lm(TajimaD ~ pop, rbind(amos_td[,4:5], bride_td[,4:5], long_td[,4:5], pat_td[,4:5], quon_td[,4:5])))
+TukeyHSD(aov(TajimaD ~ pop, rbind(amos_td[,4:5], bride_td[,4:5], long_td[,4:5], pat_td[,4:5], quon_td[,4:5])))
+#                    diff         lwr         upr     p adj
+# bride-amos -0.926297912 -0.96105561 -0.89154021 0.0000000 ***
+# long-amos  -0.363778676 -0.39854810 -0.32900925 0.0000000 ***
+# pat-amos   -0.044907620 -0.07968683 -0.01012841 0.0039173 **
+# quon-amos  -0.367647344 -0.40242901 -0.33286568 0.0000000 ***
+# long-bride  0.562519235  0.52811800  0.59692047 0.0000000 ***
+# pat-bride   0.881390292  0.84697916  0.91580142 0.0000000 ***
+# quon-bride  0.558650568  0.52423696  0.59306417 0.0000000 ***
+# pat-long    0.318871056  0.28444809  0.35329403 0.0000000 ***
+# quon-long  -0.003868668 -0.03829411  0.03055678 0.9980850
+# quon-pat   -0.322739724 -0.35717506 -0.28830439 0.0000000 ***
+
+
+
+#### Heterozygosity and FIS ####
+het <- read.table("./popgen_stats/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10.het", header=TRUE, sep="\t") %>%
+  separate(INDV, c("lake", NA), sep="_", remove=FALSE) %>%
+  mutate(lake = factor(tolower(lake), levels=all_lakes),
+         o_het = N_SITES - O.HOM.,
+         e_het = N_SITES - E.HOM.,
+         o_het_frac = o_het / N_SITES,
+         e_het_frac = e_het / N_SITES)
+
+for (lake_file in all_lakes ) local({
+  het_temp <- subset(het, lake %in% lake_file)
+  table_s1[lake_file,"ho"] <- paste0(signif(mean(het_temp$o_het_frac), 3), " (", 
+                                     signif(mean_se(het_temp$o_het_frac)$ymax - mean_se(het_temp$o_het_frac)$y, 2), ")")
+  table_s1[lake_file,"he"] <- paste0(signif(mean(het_temp$e_het_frac), 3), " (", 
+                                     signif(mean_se(het_temp$e_het_frac)$ymax - mean_se(het_temp$e_het_frac)$y, 1), ")")
+  
+  # Does each lake significantly differ between expected and observed heterozygosity?
+  ttest <- t.test(x=het_temp$e_het_frac, y=het_temp$o_het_frac, alternative="greater", paired=TRUE)
+  table_s1[lake_file,"he.ho"] <- paste0("t_", ttest$parameter, "=", signif(ttest$statistic, 3), ", p",
+                                        ifelse(ttest$p.value==0, "<2.2e-16", paste0("=", signif(ttest$p.value, 3))))
+  
+  ## FIS
+  table_s1[lake_file,"fis"] <- paste0(signif(mean(het_temp$F, na.rm=TRUE), 3), " (", 
+                                      signif(mean_se(het_temp$F)$ymax - mean_se(het_temp$F)$y, 3), ")")
+  
+  assign("table_s1", table_s1, pos=1)
+})
+
+## Within observed or expected heterozygosity, are the lakes significantly different from each other?
+for (type in c("o", "e")) local({
+  h_anova <- anova(lm(get(paste(type, "het_frac", sep="_")) ~ lake, het))
+  table_s1["anova",paste0("h", type)] <- paste0("F_(", paste(h_anova$Df[1], h_anova$Df[2], sep=", "), ")=", signif(h_anova$`F value`[1], 3), ", p",
+                                                      ifelse(h_anova$`Pr(>F)`[1]==0, "<2.2e-16", paste0("=", signif(p.adjust(h_anova$`Pr(>F)`, method="fdr"), 3))))
+  
+  print(TukeyHSD(aov(get(paste(type, "het_frac", sep="_")) ~ lake, het)), pos=1)
+  assign("table_s1", table_s1, pos=1)
+})
+# OBS                diff          lwr         upr     p adj
+# amos-bride -0.120311184 -0.131291469 -0.10933090 0.0000000 ***
+# long-bride -0.114049142 -0.125029427 -0.10306886 0.0000000 ***
+# quon-bride -0.088157390 -0.099497779 -0.07681700 0.0000000 ***
+# pat-bride  -0.080782385 -0.091934695 -0.06963008 0.0000000 ***
+# long-amos   0.006262042 -0.005766257  0.01829034 0.5997379
+# quon-amos   0.032153795  0.019795892  0.04451170 0.0000000 ***
+# pat-amos    0.039528800  0.027343261  0.05171434 0.0000000 ***
+# quon-long   0.025891752  0.013533850  0.03824965 0.0000007 ***
+# pat-long    0.033266757  0.021081219  0.04545230 0.0000000 ***
+# pat-quon    0.007375005 -0.005135995  0.01988600 0.4774741
+
+# EXP                 diff          lwr           upr     p adj
+# amos-bride -9.465430e-04 -0.003035193  0.0011421067 0.7169636
+# long-bride -2.387605e-03 -0.004476255 -0.0002989556 0.0166139 *
+# quon-bride -1.811118e-03 -0.003968267  0.0003460298 0.1433878
+# pat-bride  -2.393695e-03 -0.004515067 -0.0002723227 0.0187349 *
+# long-amos  -1.441062e-03 -0.003729063  0.0008469388 0.4089565
+# quon-amos  -8.645753e-04 -0.003215273  0.0014861224 0.8449425
+# pat-amos   -1.447152e-03 -0.003765063  0.0008707591 0.4180666
+# quon-long   5.764870e-04 -0.001774211  0.0029271847 0.9601290
+# pat-long   -6.089444e-06 -0.002324000  0.0023118215 1.0000000
+# pat-quon   -5.825765e-04 -0.002962396  0.0017972432 0.9603850
+
+
+## Windowed Heterozygosity - Histogram
+for (lake in c("amos", "bride", "long", "pat", "quon")) local({
+  lake <- lake
+  ## First, make the windowed heterozygosity files if they do not already exist using the windows in the pixy output
+  if ( !file.exists(paste0("./popgen_stats/", lake, "_het_50kb_windows.txt")) ) { 
+    het_example <- read.table(paste0("./popgen_stats/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_", lake, "_subset.hwe", lake, "_subset.hwe"), header=TRUE, sep="\t") %>%
+      rename(~c("chr", "pos", "obs", "exp")) %>%
+      separate(OBS.HOM1.HET.HOM2., into=c("OHOM1", "OHET", "OHOM2"), sep=c("/"), 
+               E.HOM1.HET.HOM2., into=c("EHOM1", "EHET", "EHOM2"), sep=c("/")) %>%
+      mutate(OHOM1 = as.numeric(OHOM1), 
+             OHOM2 = as.numeric(OHOM2), 
+             OHET = as.numeric(OHET), 
+             EHOM1 = as.numeric(EHOM1), 
+             EHOM2 = as.numeric(EHOM2),
+             EHET = as.numeric(EHET))
+    
+    ## There are some rows with NA's in the expected columns (any site where no individual in that pop had a retained genotype) so I'm going to remove any rows with them
+    het_example <- subset(het_example, !is.na(EHOM1) & !is.na(EHOM2) & !is.na(EHET))
+    
+    ## Calculate fraction heterozygous
+    print(paste(lake, "Fraction Expected Heterozygous Loci:", sum(het_example$EHET) / sum(sum(het_example$EHOM1), sum(het_example$EHOM2), sum(het_example$EHET))))
+    print(paste(lake, "Fraction Observed Heterozygous Loci:", sum(het_example$OHET) / sum(sum(het_example$OHOM1), sum(het_example$OHOM2), sum(het_example$OHET))))
+
+    ### Calculate fraction heterozygous in 50kb windows ###
+    het_windows <- c()
+    for (i in 25:2) {
+      chr <- chroms$chr[i]
+      het_frame <- read.table(paste0("./pixy_files/pixy_dxy_50000_", chr, ".txt"), header=TRUE, sep="\t") %>%
+        pivot_wider(id_cols=c("chromosome", "window_pos_1", "window_pos_2"), names_from=c("pop1", "pop2"), values_from="avg_dxy")[,c(1:3)] %>%
+        mutate(EHET = 0, OHET = 0, total = 0)
+      het_windows <- rbind(het_windows, het_frame)
+    }
+    het_windows$row_num <- row_number(het_windows)
+
+    ## Adding the observed and expected heterozygosity up for each 50kb window to make a histogram
+    het_example <- subset(het_example, CHR != "NC_014690.1")
+    for (i in 1:nrow(het_example)) {
+      if ( i%%100 == 0 ) { print(paste(lake, "row", i, "out of", nrow(het_example))) }
+      het_window <- subset(het_windows, chromosome %in% het_example$CHR[i] &
+                             window_pos_1 <= het_example$POS[i] &
+                             window_pos_2 >= het_example$POS[i])  %>% ## Pull the window that the row of het_example would fall into
+        mutate(EHET = sum(EHET, het_example$EHET[i]),  ## Add the expected # of het loci in row [i] to the running window sum
+               OHET = sum(OHET, het_example$OHET[i]), ## Add the observed # of het loci in row [i] to the running window sum
+               total = sum(total, het_example$n_ind[i])) ## Add the total # of reads at loci [i] to the running window sum
+      het_windows[het_windows$row_num == het_window$row_num, ] <- het_window ## Replace the window row with the edited window pulled before
+    }
+    het_windows <- het_windows %>% 
+      rowwise() %>%
+      mutate(OHET_frac = (OHET / total), 
+             EHET_frac = (EHET / total))
+    write.table(x=het_windows, file=paste("./popgen_stats/", lake, "het_50kb_windows.txt", sep="_"), row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
+  } 
+  
+  ## Reading in the het files (takes ~9 hours to create all 5 lakes' files from scratch as done above)
+  het_example <- read.table(paste0("./popgen_stats/", lake, "_het_50kb_windows.txt"), header=TRUE, sep="\t") %>%
+    merge(., chroms, by.x="chromosome", by.y="chr") %>%
+    mutate(chr_num = as.factor(chr_num), 
+           lake = lake)
+  assign(x=paste(lake, "het_windows", sep="_"), value=het_example, pos=1)
+  
+  print(paste0("Number of windows with 0 heterozygous SNPs in ", lake, ": ", nrow(subset(het_example, OHET==0))), pos=1)
+})
+
+## Graphing windowed H_o results:
+ho_boxplot <- rbind(bride_het_windows, amos_het_windows, long_het_windows, pat_het_windows, quon_het_windows) %>%
+  mutate(lake = factor(tolower(lake), levels=all_lakes)) %>%
+  filter(!is.na(OHET_frac)) %>%
+  ggplot(aes(x=lake, y=OHET_frac, color=lake, fill=lake)) + 
+    geom_boxplot(alpha=0.5) + 
+    geom_violin() + 
+    scale_y_continuous(limits=c(0, 0.55)) +
+    scale_color_manual(values=colors) + 
+    scale_fill_manual(values=colors) + 
+    theme_cowplot()
+ho_boxplot
+
+
+### FIS Boxplots
+fis_plot <- ggplot(het, aes(x=lake, y=F, color=lake)) +
+  geom_hline(yintercept=0, color="grey50") +
+  geom_violin(aes(fill=lake), alpha=0.2, width=0.8) +
+  geom_boxplot(aes(group=lake), width=0.2) +
+  geom_jitter(width=0.2, size=1) +
+  scale_color_manual(values=colors, aesthetics=c("fill","color")) +
+  scale_y_continuous(name="FIS", limits=c(-0.3, 0.5)) +
+  theme_cowplot() +
+  theme(legend.position="none", axis.title.x=element_blank())
+fis_plot
+
+fis_anova <- anova(lm(F ~ lake, data=het))
+table_s1["anova", "fis"] <- paste0("F_(", paste(fis_anova$Df[1], fis_anova$Df[2], sep=", "), ")=", signif(fis_anova$`F value`[1], 3), ", p", 
+                                 ifelse(fis_anova$`Pr(>F)`[1]==0, "<2.2e-16", paste0("=", signif(fis_anova$`Pr(>F)`[1], 3))))
+TukeyHSD(aov(F ~ lake, data=het))
+#                   diff         lwr         upr     p adj
+# amos-bride  0.46908483  0.43001035  0.50815932 0.0000000 ***
+# long-bride  0.43986733  0.40079285  0.47894182 0.0000000 ***
+# quon-bride  0.33954800  0.29919204  0.37990396 0.0000000 ***
+# pat-bride   0.30832554  0.26863889  0.34801220 0.0000000 ***
+# long-amos  -0.02921750 -0.07202146  0.01358646 0.3262752
+# quon-amos  -0.12953683 -0.17351372 -0.08555995 0.0000000 ***
+# pat-amos   -0.16075929 -0.20412280 -0.11739578 0.0000000 ***
+# quon-long  -0.10031933 -0.14429622 -0.05634245 0.0000001 ***
+# pat-long   -0.13154179 -0.17490530 -0.08817828 0.0000000 ***
+# pat-quon   -0.03122246 -0.07574415  0.01329924 0.2992979
+
+
+#### ROH and FROH ####
+total_genome <- sum(read.csv("GCF_018492685.1_fAloSap1.pri_genomic.fna.fai", sep="\t", header=FALSE)$V2)
+
+## Plotting total # of bins for ROH bins per lake
+roh_bin <- data.frame("lake"=c(rep("bride",3), rep("amos",3), rep("long",3), rep("quon",3), rep("pat",3)),
+                      "bin"=rep(c("0.5-0.75", "0.75-1.0", ">1.0"), 5),
+                      "count"=rep(1, 15),
+                      "sum_length"=rep(1, 15))
+
+all_roh <- c()
+froh_cat <- c()
+bin_row <- 1
+for (lake in all_lakes) {
+  ## plink ( FID     IID     PHE     CHR     SNP1    SNP2    POS1    POS2    KB      NSNP    DENSITY PHOM    PHET)
+  example_roh <- read.table(paste("./popgen_stats/ashad_replaced", lake, "plink_roh.hom", sep="_"), header=TRUE, sep="\t")[,-c(1:2,4,6:7)] %>%
+    mutate(roh_lake = lake, 
+           roh_color = get(paste0(lake, "_col")), 
+           IID = tolower(IID))
+  
+  ## Combine lake-specific files for later use
+  all_roh <- rbind(all_roh, example_roh)
+  
+  # Calculating lake stats for bins
+  example_roh_five <- subset(example_roh, KB >= 500 & KB <= 750)
+  example_roh_seven <- subset(example_roh, KB >= 750 & KB <= 1000)
+  example_roh_ten <- subset(example_roh, KB >= 1000)
+  
+  if (lake == "bride") { lake_indiv <- 30
+  } else if (lake == "amos" || lake == "long") { lake_indiv <- 20
+  } else if (lake == "pat") { lake_indiv <- 19 
+  } else if (lake == "quon") { lake_indiv <- 18 }
+  
+  for (bin in c("five", "seven", "ten")) {
+    bin_example <- get(paste("example_roh", bin, sep="_"))
+    roh_bin$count[bin_row] <- nrow(bin_example) / lake_indiv
+    roh_bin$sum_length[bin_row] <- sum(bin_example$KB) / lake_indiv
+    bin_row <- bin_row + 1
+  }
+  
+  
+  ## FROH ##
+  lake_list <- data.frame("indiv"=tolower(read.csv(paste0(lake, "_n107_vcftools.txt"), header=FALSE)[[1]]))
+  lake_froh <- data.frame("indiv"=rep("1", nrow(lake_list)),
+                          "froh"=rep(1, nrow(lake_list)), 
+                          "count"=rep(1, nrow(lake_list)))
+   
+   row_num <- 1
+   for (indiv in c(1:30)) {
+     if (paste(lake, indiv, sep="_") %in% lake_list[[1]]) {
+       lake_roh_indiv <- subset(example_roh, IID == paste(lake, indiv, sep="_"))
+
+       lake_froh$indiv[row_num] <- paste(lake, indiv, sep="_")
+       lake_froh$froh[row_num] <- (sum(lake_roh_indiv$KB * 1000) / total_genome)
+       lake_froh$count[row_num] <- nrow(lake_roh_indiv)
+       row_num <- row_num + 1
+     }
+   }
+   #write.table(file=paste0(out_dir, lake, "_froh.tsv"), x=lake_froh, sep="\t", row.names=FALSE)
+   assign(value=lake_froh, x=paste(lake, "froh", sep="_"))
+   froh_cat <- rbind(froh_cat, lake_froh)
+}
+all_roh <- merge(all_roh, chroms, by.x="CHR", by.y="chr")
+
+froh_cat <- froh_cat %>% 
+  separate(indiv, c("froh_lake", "indiv"), "_") %>%
+  mutate(froh_lake = factor(froh_lake, levels=all_lakes))
+
+## Are ROH significantly different between lakes?
+roh_len_anova <- anova(lm(KB ~ roh_lake, all_roh))
+# Filter_redone Df   Sum Sq Mean Sq F value Pr(>F)  
+# roh_lake       4   223954   55989   2.292 0.0576 .
+# Residuals   1414 34546284   24432
+
+## Normalize ROH by population size and check again for significance
+all_roh$KB_norm <- if_else(all_roh$roh_lake %in% "bride", all_roh$KB / 30, 
+                                 if_else(all_roh$roh_lake %in% "amos" | all_roh$roh_lake %in% "long", all_roh$KB / 20, 
+                                         if_else(all_roh$roh_lake %in% "pat", all_roh$KB / 19, all_roh$KB / 18)))
+
+## Add in mean/se normalized ROH length
+for ( lake in all_lakes ) local({ 
+  roh_subset <- subset(all_roh, roh_lake %in% lake)
+  table_s1[lake, "roh_length"] <- paste0(signif(mean(roh_subset$KB_norm), 3), " (", 
+                                         signif(mean_se(roh_subset$KB_norm)$ymax - mean_se(roh_subset$KB_norm)$y, 3), ")")
+  
+  ## FROH > 0
+  froh_subset <- subset(froh_cat, froh_lake %in% lake & froh != 0)
+  table_s1[lake, "froh"] <- paste0(signif(mean(froh_subset$froh), 3), " (", 
+                                   signif(mean_se(froh_subset$froh)$ymax - mean_se(froh_subset$froh)$y, 3), ")")
+
+  assign("table_s1", table_s1, pos=1)
+})
+## ROH ANOVA
+roh_len_anova <- anova(lm(KB_norm ~ roh_lake, all_roh))
+table_s1["anova", "roh_length"] <- paste0("F_(", paste(roh_len_anova$Df[1], roh_len_anova$Df[2], sep=", "), ")=", signif(roh_len_anova$`F value`[1], 3), ", p", 
+                                 ifelse(roh_len_anova$`Pr(>F)`[1]==0, "<2.2e-16", paste0("=", signif(roh_len_anova$`Pr(>F)`[1], 3))))
+TukeyHSD(aov(KB_norm ~ roh_lake, all_roh))
+#                   diff         lwr       upr     p adj
+# bride-amos -11.1473284 -13.9735745 -8.321082 0.0000000 ***
+# long-amos   -0.6448182  -2.4014344  1.111798 0.8542420
+# pat-amos     2.5628361   0.8545010  4.271171 0.0004240 ***
+# quon-amos    3.9938848   1.9259041  6.061865 0.0000015 ***
+# long-bride  10.5025102   7.8101192 13.194901 0.0000000 ***
+# pat-bride   13.7101644  11.0490223 16.371307 0.0000000 ***
+# quon-bride  15.1412131  12.2360775 18.046349 0.0000000 ***
+# pat-long     3.2076543   1.7312699  4.684039 0.0000000 ***
+# quon-long    4.6387030   2.7577867  6.519619 0.0000000 ***
+# quon-pat     1.4310487  -0.4048583  3.266956 0.2082813 
+
+## F_ROH ANOVA
+anova(lm(froh ~ froh_lake, data=froh_cat))
+#            Df    Sum Sq    Mean Sq F value    Pr(>F)    
+# froh_lake   4 0.0037003 0.00092507  5.5048 0.000471 ***
+# Residuals 102 0.0171407 0.00016805
+TukeyHSD(aov(froh ~ froh_lake, data=froh_cat))
+#                     diff          lwr         upr     p adj
+# amos-bride  0.0070619775 -0.003330708 0.017454663 0.3308357
+# long-bride  0.0123619899  0.001969304 0.022754676 0.0112879 *
+# quon-bride  0.0062604492 -0.004473071 0.016993969 0.4883303
+# pat-bride   0.0164134155  0.005857910 0.026968921 0.0003467 ***
+# long-amos   0.0053000124 -0.006084604 0.016684629 0.6961678
+# quon-amos  -0.0008015284 -0.012498110 0.010895054 0.9997022
+# pat-amos    0.0093514379 -0.002182004 0.020884880 0.1694309
+# quon-long  -0.0061015408 -0.017798123 0.005595041 0.5978775
+# pat-long    0.0040514256 -0.007482016 0.015584867 0.8656213
+# pat-quon    0.0101529663 -0.001688520 0.021994453 0.1288607
+
+## FROH > 0 ANOVA
+froh_anova <- anova(lm(froh ~ froh_lake, data=subset(froh_cat, froh!=0)))
+table_s1["anova", "froh"] <- paste0("F_(", paste(froh_anova$Df[1], froh_anova$Df[2], sep=", "), ")=", signif(froh_anova$`F value`[1], 3), ", p", 
+                                   ifelse(froh_anova$`Pr(>F)`[1]==0, "<2.2e-16", paste0("=", signif(froh_anova$`Pr(>F)`[1], 3))))
+TukeyHSD(aov(froh ~ froh_lake, data=subset(froh_cat, froh!=0)))
+# Filtering redone   diff          lwr         upr     p adj
+# amos-bride  0.022778983  0.007056918 0.038501048 0.0012017 **
+# long-bride  0.015127249  0.003173051 0.027081448 0.0062475 **
+# quon-bride  0.009520769 -0.003515279 0.022556817 0.2550180
+# pat-bride   0.020495444  0.008317184 0.032673703 0.0001212 ***
+# long-amos  -0.007651734 -0.023976394 0.008672926 0.6831929
+# quon-amos  -0.013258214 -0.030390938 0.003874509 0.2038181
+# pat-amos   -0.002283540 -0.018772981 0.014205901 0.9950676
+# quon-long  -0.005606480 -0.019363287 0.008150327 0.7831134
+# pat-long    0.005368194 -0.007578666 0.018315055 0.7722205
+# pat-quon    0.010974675 -0.002977274 0.024926623 0.1902868
+
+
+## Plotting binned ROH
+roh_count_bins <- roh_bin %>%
+  mutate(lake = factor(lake, levels=all_lakes), 
+         bin = factor(bin, levels=c("0.5-0.75", "0.75-1.0", ">1.0"))) %>%
+  ggplot(aes(x=lake, y=count, fill=bin)) +
+    geom_bar(position="dodge", stat="identity") +
+    ylab("Normalized ROH Count") +
+    theme_cowplot() +
+    scale_fill_manual("Bins (Mb)", values=c("0.5-0.75"="#D3CED3", "0.75-1.0"="#8F8C8F", ">1.0"="#4A4A4A")) +
+    theme(axis.title.x=element_blank())
+roh_count_bins
+
+
+## Plotting FROH
+maxes <- c(by(froh_cat$froh, froh_cat$froh_lake, max))
+col_labs <- c(paste("n =", nrow(subset(bride_froh, froh!=0))), 
+              paste("n =", nrow(subset(amos_froh, froh!=0))),
+              paste("n =", nrow(subset(long_froh, froh!=0))), 
+              paste("n =", nrow(subset(quon_froh, froh!=0))),
+              paste("n =", nrow(subset(pat_froh, froh!=0))))
+
+froh_comp <- ggplot(froh_cat, aes(x=froh_lake, y=froh, color=froh_lake)) +
+  geom_boxplot(data=subset(froh_cat, froh!=0), aes(x=froh_lake, y=froh, color=froh_lake, group=froh_lake), width=0.2) +
+  geom_jitter(width=0.2) +
+  geom_text(data=data.frame(), aes(x=names(maxes), y=maxes + 0.01, label=col_labs, color="black")) +
+  scale_color_manual(values=c(colors, "black"), aesthetics=c("color", "fill")) +
+  xlab("Lake") +
+  scale_y_continuous(name="F_ROH", limits=c(0,0.075)) +
+  theme_cowplot() + 
+  theme(legend.position="none", axis.title.x=element_blank())
+froh_comp
+
+
+
+#### Finalizing Figure 2 and Table S2 ####
+## Table S1 column/row names
+colnames(table_s1) <- c("FST (with Bride)", "pi", "Tajima's D", "H_o", "H_e", "H_e < H_o (one-tailed paired t-test)", "Normalized ROH Length (Kb)", "F_ROH (for F_ROH > 0)", "F_IS")
+rownames(table_s1) <- c(all_lakes, "One-way ANOVA")
+write.table(table_s1, paste0(out_dir, "popgen_demography_stats_table_s1_test.txt"), quote=FALSE, row.names=TRUE, col.names=TRUE, sep="\t")
+
+## Figure 2
+fig2_graphs <- plot_grid(pi_boxplot, roh_count_bins, ho_boxplot, froh_comp, td_boxplot, fis_plot, ncol=2, axis="b", align="v", rel_widths=c(1,0.8))
+fig2_graphs
+ggsave(paste0(out_dir, "figure_2_sans_ld_graphs_boxplots_test.pdf"), fig2_graphs, width=10, height=8)
+```
+
+Rocha 2022 paper: https://github.com/joanocha/ngsSelection/blob/main/Ohana/llratios_windows.py
+``` {r Figure 3 & Table S3 - Ohana Manhattan Plot & Shared Outliers}
+ohana_quantile <- 0.99
+ohana_quantile_name <- as.character((1-ohana_quantile)*100)
+metric <- "mean_lle_ratio" #cum_lle_ratio max_lle_ratio top_mean_lle_ratio
+
+#### Load in pairwise selection scan ####
+for ( lake in l_lakes ) local({
+  ## Site-level log-likelihood ratios
+  ohana_selscan <- read.table(paste("./ohana/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_bride", lake, "maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_MAF001_geno01_scan_lle-ratios.txt", sep="_"), header=TRUE, sep="\t")[,-1]
+  ohana_map <- read.table(paste("./ohana/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_bride", lake, "maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_MAF001_geno01.map", sep="_"), header=FALSE, sep="\t")[,-c(2:3)]
+  
+  ## Merge the LLR result file & mapping files together
+  ohana_snp_level <- cbind(ohana_selscan, ohana_map) %>%
+    rename_with(~c("lle_ratio", "global_lle", "local_lle", "f_1", "f_2", "chr", "pos")) %>%
+    merge(., chroms, by="chr") %>%
+    mutate(chr_num = as.factor(chr_num), 
+           outlier = if_else(lle_ratio >= quantile(lle_ratio, ohana_quantile), 1, 0), 
+           zscore = (lle_ratio - mean(lle_ratio, na.rm=TRUE)) / sd(lle_ratio, na.rm=TRUE), 
+           pop = lake)
+  assign(x=paste(lake, "ohana_snp", sep="_"), value=ohana_snp_level, pos=1)
+  
+  
+  ## Windowed files - Load if already made, create if not
+  windowed_file <- paste("./ohana/pairwise_selscan", lake, "redone_filtering_50kb_10kb_snpcount.txt", sep="_")
+  if ( file.exists(windowed_file) ) { 
+    ohana_windows <- read.table(paste("./ohana/pairwise_selscan", lake, "redone_filtering_50kb_10kb_snpcount.txt", sep="_"), header=TRUE, sep="\t") %>%
+      filter(!is.na(get(metric))) %>%
+      mutate(chr_num = as.factor(chr_num),
+             outlier = if_else(.[[metric]] >= quantile(.[[metric]], ohana_quantile, na.rm=TRUE), 1, 0))
+    assign(x=paste(lake, "ohana_windows", sep="_"), value=ohana_windows, pos=1)
+    
+  } else { ### Recreating the windowed files if desired
+    chrom_length <- read.table("./chrom_length.tsv", header=TRUE, sep="\t")
+    ohana_pos <- subset(ohana_snp_level, chr != "NC_014690.1")
+    num_windows <- ceiling(sum(chrom_length[,2]) / 10000) + 5
+    ohana_windows <- data.frame("chr"=rep(0, num_windows), "window_pos_1"=rep(0, num_windows), "window_pos_2"=rep(0, num_windows),
+                                "mean_lle_ratio"=rep(0, num_windows), "cum_lle_ratio"=rep(0, num_windows), "num_snps"=rep(0, num_windows))
+    ohana_windows_row <- 1
+    
+    for (chrom in 1:24) {
+      
+      print(paste("Running", lake, "chr", chrom))
+      
+      chr_subset <- subset(ohana_pos, chr %in% chrom_length[chrom,1]) %>%
+        arrange(pos) %>%
+        mutate(snp_count = 1:nrow(.))
+      
+      window_start <- 1
+      window_end <- 50000
+      slide <- 10000
+      
+      ## Create the windowed files with a variety of summary metrics if desired
+      while ( window_start + 40000 <= chrom_length[chrom,2] ) {
+        subset_tmp <- subset(chr_subset, pos >= window_start & pos <= window_end)
+        
+        ohana_windows$chr[ohana_windows_row] <- chrom_length[chrom,1]
+        ohana_windows$window_pos_1[ohana_windows_row] <- window_start
+        ohana_windows$window_pos_2[ohana_windows_row] <- window_end
+        
+        ohana_windows$mean_lle_ratio[ohana_windows_row] <- mean(subset_tmp$lle_ratio, na.rm=TRUE)
+        ohana_windows$cum_lle_ratio[ohana_windows_row] <- sum(subset_tmp$lle_ratio)
+        ohana_windows$num_snps[ohana_windows_row] <- nrow(subset_tmp)
+        ohana_windows$top_mean_lle_ratio[ohana_windows_row] <- mean(subset(subset_tmp, lle_ratio >= quantile(subset_tmp$lle_ratio, 0.8))$lle_ratio)
+        ohana_windows$max_lle_ratio[ohana_windows_row] <- ifelse(ohana_windows$num_snps[ohana_windows_row] != 0, max(subset_tmp$lle_ratio, na.rm=TRUE), NA)
+        
+        window_start <- window_start + slide
+        if ( window_end + slide <= chrom_length[chrom,2] ) { window_end <- window_end + slide }
+        else if ( window_end + slide > chrom_length[chrom,2] ) { window_end <- chrom_length[chrom,2] }
+        ohana_windows_row <- ohana_windows_row + 1
+      }
+    }
+    
+    print(summary(ohana_windows$num_snps))
+    ohana_windows <- subset(ohana_windows, !is.na(cum_lle_ratio)) %>%
+      merge(., chroms, by="chr") %>%
+      mutate(chr_num = as.factor(chr_num),
+             outlier = ifelse(.[[metric]] >= quantile(.[[metric]], ohana_quantile, na.rm=TRUE), 1, 0))
+    assign(x=paste(lake, "ohana_windows", sep="_"), value=ohana_windows, pos=1)
+  }
+})
+
+
+#### Figure 3A - Shared Outlier Manhattan Plot ####
+all_ohana_windows <- merge(amos_ohana_windows, long_ohana_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), all=TRUE, suffixes=c("_amos", "_long")) %>%
+  merge(., quon_ohana_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), all=TRUE) %>%
+  merge(., pat_ohana_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), all=TRUE, suffixes=c( "_quon", "_pat")) %>%
+  mutate(outlier_amos = ifelse(is.na(outlier_amos), 0, outlier_amos), 
+         outlier_long = ifelse(is.na(outlier_long), 0, outlier_long),
+         outlier_quon = ifelse(is.na(outlier_quon), 0, outlier_quon),
+         outlier_pat = ifelse(is.na(outlier_pat), 0, outlier_pat)) %>%
+  mutate(total_outliers = rowSums(.[,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")]), 
+         outlier_lakes = NA) 
+
+## Add list of outlier pakes per window
+# In a subset of just "1 outlier" rows looking only at the 0/1 outlier columns, apply a function (gsub) to get the "name" of "which" column (2 instead of row (1)) has "metric" "%in%" 1
+for ( i in 1:nrow(all_ohana_windows) ) {
+  
+  if ( all_ohana_windows$total_outliers[i] == 1 ) {
+    lake <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+      apply(all_ohana_windows[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1)) ))) )
+    all_ohana_windows$outlier_lakes[i] <- lake
+  } 
+  
+  else if ( all_ohana_windows$total_outliers[i] == 2 ) {
+    lake1 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+      apply(all_ohana_windows[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1)) )))[1] )
+    lake2 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+      apply(all_ohana_windows[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1)) )))[2] )
+    all_ohana_windows$outlier_lakes[i] <- paste(lake1, lake2, sep="_")
+  } 
+  
+  else if ( all_ohana_windows$total_outliers[i] == 3 ) {
+    lake1 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+      apply(all_ohana_windows[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1)) )))[1] )
+    lake2 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+      apply(all_ohana_windows[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1)) )))[2] )
+    lake3 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+      apply(all_ohana_windows[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1)) )))[3] )
+    all_ohana_windows$outlier_lakes[i] <- paste(lake1, lake2, lake3, sep="_")
+  } 
+  
+  else if ( all_ohana_windows$total_outliers[i] == 4 ) {
+    all_ohana_windows$outlier_lakes[i] <- paste("amos", "long", "pat", "quon", sep="_")
+  }
+}
+rm(lake, lake1, lake2, lake3, i)
+
+
+## 4-way manhattan plotgrid
+for (lake in l_lakes ) local({
+  ohana_windows_na_rm <- get(paste(lake, "ohana_windows", sep="_"), pos=1) %>%
+    mutate(outlier = if_else(is.na(outlier), 0, outlier))
+  
+  ## Remove a majority of non-significant windows to decrease the file size of the resulting plots for easier editing
+  subset_plot <- FALSE
+  if ( subset_plot == TRUE ) {
+    nonsig_count <- 1
+    ohana_windows_subset <- ohana_windows_na_rm[,]
+    for ( row_num in 1:nrow(ohana_windows_na_rm) ) {
+      if ( ohana_windows_na_rm$outlier[row_num] == 0 & nonsig_count%%10 == 0 ) {
+        ohana_windows_subset <- rbind(ohana_windows_subset, ohana_windows_na_rm[row_num,])
+        nonsig_count <- nonsig_count + 1
+      } else if ( nonsig_count%%10 != 0 ) { nonsig_count <- nonsig_count + 1 }
+    }
+    ohana_windows_na_rm <- ohana_windows_subset[-1,] %>%
+      mutate(chr_num = factor(chr_num, levels=c(as.character(seq(1,24)))))
+  }
+  
+  
+  ## Plotting
+  if ( metric %like% "cum") {
+    ylim_max <- 850
+  } else {
+    ylim_max <- 20
+  }
+  
+  lake <- lake
+  ohana_selscan_plot <<- ggplot(subset(ohana_windows_na_rm, outlier %in% 0), aes(x=window_pos_1 + 25000, y=get(metric), col=chr_num)) +
+    geom_point() +
+    geom_hline(aes(yintercept=quantile(ohana_windows_na_rm[, metric], ohana_quantile, na.rm=TRUE), color=get(paste0(lake, "_col"))), linewidth=1) +
+    geom_point(data=subset(all_ohana_windows, total_outliers %in% 1 & outlier_lakes %like% lake),
+               aes(x=window_pos_1 + 25000, y=get(paste(metric, lake, sep="_")), col=get(paste0(lake, "_col")))) +
+    xlab("Chromosome") +
+    scale_y_continuous(name=lake, limits=c(0,ylim_max)) +
+    scale_color_manual(values=c(rep(c(chrom1, chrom2), 12), get(paste0(lake, "_col")), two_lakes_col, three_lakes_col, four_lakes_col)) +
+    facet_grid( ~ chr_num, scales = "free_x", switch = "x", space = "free_x") +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+          panel.spacing = unit(0.05, "cm"),
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          strip.placement = "outside",
+          legend.position = "none",
+          axis.line.x = element_line(linewidth = 0.5, linetype = "solid", color = "black"))
+  
+  ## Remove the x-axis labels to condense the plots together
+  if (lake != "pat") { 
+    ohana_selscan_plot <<- ohana_selscan_plot + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), 
+                                                      axis.ticks.x=element_blank(), strip.text.x = element_blank()) 
+  }
+  
+  ## Adding on 2, 3, and 4-way points to the above plot
+  ohana_selscan_plot2 <<- ohana_selscan_plot + 
+    geom_point(data=subset(all_ohana_windows, total_outliers == 2 & outlier_lakes %like% lake),
+               aes(x=window_pos_1 + 25000, y=get(paste(metric, lake, sep="_")), col=two_lakes_col)) +
+    geom_point(data=subset(all_ohana_windows, total_outliers == 3 & outlier_lakes %like% lake),
+               aes(x=window_pos_1 + 25000, y=get(paste(metric, lake, sep="_")), col=three_lakes_col), shape=17, size=2) +
+    geom_point(data=subset(all_ohana_windows, total_outliers == 4),
+               aes(x=window_pos_1 + 25000, y=get(paste(metric, lake, sep="_")), col=four_lakes_col), shape=18, size=3)
+  assign(x=paste(lake, "ohana_selscan_plot", sep="_"), value=ohana_selscan_plot2, pos=1)
+})
+ohana_selscan_plotgrid <- plot_grid(amos_ohana_selscan_plot, NULL, long_ohana_selscan_plot, NULL, quon_ohana_selscan_plot, NULL, pat_ohana_selscan_plot, nrow=7, rel_heights=c(1, -0.25, 1, -0.25, 1, -0.25, 1), align="hv", axis="b")
+ohana_selscan_plotgrid
+
+
+#### Figure 3B - Shared Outlier Windows ####
+all_ohana_outliers <- subset(all_ohana_windows, outlier_amos == 1 | outlier_long == 1 | outlier_quon == 1 | outlier_pat == 1) %>%
+  rename_with(~l_lakes, c(outlier_amos, outlier_long, outlier_quon, outlier_pat))
+
+library(ComplexUpset)
+size = get_size_mode('exclusive_intersection')
+
+window_upset <- upset(all_ohana_outliers, c("pat","quon","long","amos"), 
+      base_annotations=list(
+        'Intersection size'=intersection_size(
+          text_mapping=aes(label=!!size,
+            color="black", y=(!!size + 25))
+        ) +
+        ylab("Mean LLR Outlier Windows") +
+        ylim(0,800)
+      ),
+      intersections=list("amos", "long", "quon", "pat",
+                         c("amos", "long"), c("amos", "quon"), c("amos", "pat"),
+                         c("long", "quon"), c("long", "pat"), c("quon", "pat"), 
+                         c("amos", "long", "quon"), c("amos", "long", "pat"), c("amos", "quon", "pat"), c("long", "quon", "pat"), 
+                         c("amos", "long", "quon", "pat")),
+      matrix=(
+        intersection_matrix(
+          outline_color=list(active="#909190", inactive="#EBEBEB"), 
+          geom=geom_point(size=3))
+      ),
+      queries=list(
+        upset_query(set='amos', fill=amos_col),
+        upset_query(set='long', fill=long_col),
+        upset_query(set='quon', fill=quon_col),
+        upset_query(set='pat', fill=pat_col),
+        upset_query(intersect=c('amos'), fill=amos_col, color=amos_col, only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('long'), fill=long_col, color=long_col, only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('quon'), fill=quon_col, color=quon_col, only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('pat'), fill=pat_col, color=pat_col, only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('amos', 'long'), fill=two_lakes_col, color=two_lakes_col,
+                    only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('amos', 'quon'), fill=two_lakes_col, color=two_lakes_col,
+                    only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('amos', 'pat'), fill=two_lakes_col, color=two_lakes_col,
+                    only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('long', 'quon'), fill=two_lakes_col, color=two_lakes_col,
+                    only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('long', 'pat'), fill=two_lakes_col, color=two_lakes_col,
+                    only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('quon', 'pat'), fill=two_lakes_col, color=two_lakes_col,
+                    only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('amos', 'long', 'quon'), fill=three_lakes_col, color=three_lakes_col,
+                    only_components=c('intersections_matrix')), #, 'Intersection size')),
+        upset_query(intersect=c('amos', 'long', 'pat'), fill=three_lakes_col, color=three_lakes_col,
+                    only_components=c('intersections_matrix')), #, 'Intersection size')),
+        upset_query(intersect=c('amos', 'quon', 'pat'), fill=three_lakes_col, color=three_lakes_col,
+                    only_components=c('intersections_matrix')), #, 'Intersection size')),
+        upset_query(intersect=c('long', 'quon', 'pat'), fill=three_lakes_col, color=three_lakes_col,
+                    only_components=c('intersections_matrix', 'Intersection size')),
+        upset_query(intersect=c('amos', 'long', 'quon', 'pat'), fill=four_lakes_col, color=four_lakes_col,
+                    only_components=c('intersections_matrix'))#, 'Intersection size'))
+      ),
+      set_sizes=(
+        upset_set_size() + theme_cowplot() + theme(axis.title.y=element_blank(), axis.text.y=element_blank(), strip.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+      ),
+      themes=list('Intersection size'=list(theme_cowplot(), theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), strip.text.x = element_blank())), 
+                  'intersections_matrix'=list(theme_cowplot(), theme(axis.text.x=element_blank(), strip.text.x = element_blank(), axis.title=element_blank(), axis.ticks=element_blank(), axis.line=element_blank()))
+                  ),
+      name=NULL, keep_empty_groups=TRUE, width_ratio = 0.15, stripes=c('#F5F5F5', 'white'), sort_sets=FALSE, sort_intersections=FALSE
+)
+window_upset
+
+#### Combine Figre 3A and 3B ####
+ohana_manhattan_upset <- plot_grid(ohana_selscan_plotgrid, window_upset, nrow=2, rel_heights = c(1, 0.6))
+ohana_manhattan_upset
+ggsave(paste0(out_dir, "filtering_redone_pairwise_50kb_10kb_00", ohana_quantile_name, "_meanllr_windows_fig3.pdf"), ohana_manhattan_upset, width=12, height=10)
+
+
+
+#### Table S2 - Table of shared LLR outlier windows ####
+## First load in the annotation file
+annotation_df <- read.delim("./GCF_018492685.1_fAloSap1.pri_genomic.gtf.gz", header = FALSE, sep = "\t", skip = 4,
+                            col.names=c("chr", "type", "type2", "start", "stop", "blank1", "strand", "blank2", "info")) %>%
+  filter(type %in% "Gnomon" & type2 %in% "gene") %>%
+  select(-c(blank1, blank2)) %>%
+  separate_wider_delim(info, delim="; ", too_few="align_start",
+                       names=c("gene_name1", NA, "GeneID", "gbkey", "gene_name2", "gene_biotype", NA, NA)) %>%
+  mutate(gene_name1 = unlist(strsplit(gene_name1, split="gene_id\ "))[c(seq(2,2*nrow(.), 2))], 
+         GeneID = unlist(strsplit(GeneID, split="db_xref GeneID:"))[c(seq(2,2*nrow(.), 2))], 
+         gbkey = unlist(strsplit(gbkey, split="gbkey\ "))[c(seq(2,2*nrow(.), 2))], 
+         gene_name2 = unlist(strsplit(gene_name2, split="gene\ "))[c(seq(2,2*nrow(.), 2))], 
+         gene_biotype = unlist(strsplit(gene_biotype, split="gene_biotype\ "))[c(seq(2,2*nrow(.), 2))]) %>%
+  filter(gene_name1 %in% gene_name2) %>%
+  select(-c(gene_name1, gbkey, gene_biotype)) %>%
+  rename_with(~c("ID", "name"), c(GeneID, gene_name2))
+
+
+## Now pull the genes in each peak
+n_peaks <- 100
+genes_all <- c()
+
+for (lake in l_lakes ) {
+  highest_ohana_peaks_all <- c()
+  for (outlier_count in c(2,3,4)) {
+    ## Create an empty df for the new lake/outlier_count combo
+    highest_ohana_peaks <- data.frame("peak_num"=rep(0, n_peaks), "chr"=rep(0, n_peaks), "window_pos_1"=rep(0, n_peaks), "window_pos_2"=rep(0, n_peaks), "chr_num"=rep(0, n_peaks), "n_windows"=rep(0, n_peaks), "lake"=rep(lake, n_peaks))
+    
+    ## Subset all outliers to only those matching the lake & outlier count
+    ohana_outlier_subset <- subset(all_ohana_windows, total_outliers == outlier_count & get(paste("outlier", lake, sep="_")) == 1)
+    
+    if ( dim(ohana_outlier_subset)[1] == 0 ) {
+      break
+    }
+    
+    row_num <- 1
+    peak_num <- 1
+    for ( i in 1:nrow(ohana_outlier_subset) ) {
+      current_peak <- ohana_outlier_subset[i,]
+      ## Subset to any peaks on the same chromosome & within +/- 10Kb of the current peak
+      ohana_peaks_subset <- subset(highest_ohana_peaks, chr == current_peak$chr & 
+                                   ( (window_pos_1  >= (current_peak$window_pos_1 - 10000) &
+                                      window_pos_1 <= (current_peak$window_pos_1 + 10000)) | 
+                                     (window_pos_2 >= (current_peak$window_pos_2 - 10000) &
+                                        window_pos_2 <= (current_peak$window_pos_2 + 10000)) ) )
+      if ( dim(ohana_peaks_subset)[1] == 0 ) {  #Are there peaks on this chromosome yet AND within 10Kb? NO - 
+        highest_ohana_peaks$peak_num[row_num] <- peak_num
+        highest_ohana_peaks$chr[row_num] <- current_peak$chr
+        highest_ohana_peaks$window_pos_1[row_num] <- current_peak$window_pos_1
+        highest_ohana_peaks$window_pos_2[row_num] <- current_peak$window_pos_2
+        highest_ohana_peaks$chr_num[row_num] <- current_peak$chr_num
+        highest_ohana_peaks$n_windows[row_num] <- 1
+        row_num <- row_num + 1
+        peak_num <- peak_num + 1
+      } else { #YES - Update highest_ohana_peaks with new peak minimum & maximum, count 1 more individual with that peak
+        ohana_peaks_subset$window_pos_1 <- if_else(current_peak$window_pos_1 < min(ohana_peaks_subset$window_pos_1),
+                                                   current_peak$window_pos_1, min(ohana_peaks_subset$window_pos_1))
+        ohana_peaks_subset$window_pos_2 <- if_else(current_peak$window_pos_2 > max(ohana_peaks_subset$window_pos_2),
+                                                   current_peak$window_pos_2, max(ohana_peaks_subset$window_pos_2))
+        ohana_peaks_subset$n_windows <- sum(ohana_peaks_subset$n_windows) + 1
+        highest_ohana_peaks[highest_ohana_peaks$peak_num == ohana_peaks_subset$peak_num, ] <- ohana_peaks_subset[1,]
+      }
+    }
+    highest_ohana_peaks <- highest_ohana_peaks %>%
+      filter(n_windows != 0) %>%
+      mutate(reason = if_else(outlier_count == 2, "2_outlier", if_else(outlier_count == 3, "3_outlier", "4_outlier")))
+    highest_ohana_peaks_all <- rbind(highest_ohana_peaks_all, highest_ohana_peaks)
+  }
+  
+  ## Adding the names of overlapping genes
+  genes <- c()
+  for (i in 1:nrow(highest_ohana_peaks_all)) {
+    # Either the gene 1) starts or 2) stops within the range, or 3) reaches across the whole range
+    gene_subset <- subset(annotation_df, chr %in% highest_ohana_peaks_all$chr[i] & ( 
+      ( start >= highest_ohana_peaks_all$window_pos_1[i] & start <= highest_ohana_peaks_all$window_pos_2[i] ) | 
+        ( stop >= highest_ohana_peaks_all$window_pos_1[i] & stop <= highest_ohana_peaks_all$window_pos_2[i] ) |
+        ( start <= highest_ohana_peaks_all$window_pos_1[i] & stop >= highest_ohana_peaks_all$window_pos_2[i] )))
+    
+    if ( dim(gene_subset)[1] == 0 )  {
+      highest_ohana_peaks_all$gene_overlap_names[i] <- NA
+    } else {
+      gene_names <- gene_subset %>%
+        group_by(chr)  %>%
+        summarise(name = paste(name, collapse = ", "))
+      highest_ohana_peaks_all$gene_overlap_names[i] <- gene_names[1]
+    }
+    if ( i == 1 ) { genes <- gene_subset }
+    else { genes <- rbind(genes, gene_subset) }
+  }
+  assign(x=paste(lake, "ohana_peaks_concat", sep="_"), value=as.data.frame(highest_ohana_peaks_all))
+  assign(paste(lake, "outlier_genes", sep="_"), genes)
+  rm(current_peak, ohana_outlier_subset, ohana_peaks_subset, highest_ohana_peaks, genes, gene_subset, gene_names)
+}
+
+## Combine each lake-specific peak-gene overlap into one file and overlap the peaks if shared between lakes
+all_ohana_peaks_raw <- rbind(amos_ohana_peaks_concat, long_ohana_peaks_concat, quon_ohana_peaks_concat, pat_ohana_peaks_concat)
+all_ohana_peaks_reduced <- c()
+for (i in 1:nrow(all_ohana_peaks_raw)) {
+  all_ohana_peaks_tmp <- subset(all_ohana_peaks_raw, lake %in% all_ohana_peaks_raw$lake[i] & chr %in% all_ohana_peaks_raw$chr[i] &
+                                window_pos_1 %in% all_ohana_peaks_raw$window_pos_1[i] & 
+                                window_pos_2 %in% all_ohana_peaks_raw$window_pos_2[i])
+  if (dim(all_ohana_peaks_tmp)[1] == 1) {
+    all_ohana_peaks_reduced <- rbind(all_ohana_peaks_reduced, all_ohana_peaks_tmp)
+  } else {
+    all_ohana_peaks_tmp$reason[1] <- all_ohana_peaks_tmp %>%
+        summarise(reason = paste(reason, collapse = ","))
+    all_ohana_peaks_reduced <- rbind(all_ohana_peaks_reduced, all_ohana_peaks_tmp[1,])
+  }
+}
+all_ohana_peaks_reduced <- unique(all_ohana_peaks_reduced[,-1])
+
+all_ohana_peaks_reduced <- all_ohana_peaks_reduced[with(all_ohana_peaks_reduced, order(chr_num,window_pos_1)),]
+all_ohana_peaks <- all_ohana_peaks_reduced
+for ( i in 1:nrow(all_ohana_peaks_reduced) ) {
+  all_ohana_peaks_tmp <- subset(all_ohana_peaks_reduced, 
+                                  (chr %in% all_ohana_peaks_reduced$chr[i]) & 
+                                    (window_pos_1 %in% all_ohana_peaks_reduced$window_pos_1[i]) & 
+                                    (window_pos_1 %in% all_ohana_peaks_reduced$window_pos_1[i]) & 
+                                    (chr_num %in% all_ohana_peaks_reduced$chr_num[i]) & 
+                                    (reason %in% all_ohana_peaks_reduced$reason[i]))
+  if ( nrow(all_ohana_peaks_tmp) != 1 ) {
+    all_ohana_peaks$lake[i] <- paste0(all_ohana_peaks_tmp$lake, collapse=", ")
+  }
+}
+all_ohana_peaks <- unique(all_ohana_peaks)
+rm(all_ohana_peaks_raw, all_ohana_peaks_tmp, all_ohana_peaks_reduced)
+
+write.table(file=paste0(out_dir, "all_shared_meanLLR_peaks_genes_labeled_table_s3.txt"), x=apply(all_ohana_peaks,2,as.character), row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+
+## GO enrichment on all genes within outlier windows
+genes_all <- rbind(amos_outlier_genes, long_outlier_genes, pat_outlier_genes, quon_outlier_genes)
+all_ohana_peaks_genes_go <- gost(unique(genes_all$name),
+                                 organism = "charengus",
+                                 significant = TRUE,
+                                 correction_method = "g_SCS",
+                                 domain_scope = "custom", custom_bg = unique(annotation_df$name))
+View(all_ohana_peaks_genes_go$result)
+
+## GO enrichment for each lake's outliers:
+for ( lake in l_lakes ) {
+  print(lake)
+  genes_list <- get(paste(lake, "outlier_genes", sep="_"))
+  ohana_peaks_genes_go <- gost(unique(genes_list$name),
+                                 organism = "charengus",
+                                 significant = TRUE,
+                                 correction_method = "g_SCS",
+                                 domain_scope = "custom", custom_bg = unique(annotation_df$name))
+  print(ohana_peaks_genes_go$result)
+}
+```
+
+
+``` {r Figures 4, S2 and S3 & Tables S2 and S3 - Protocadherins and Balancing Selection}
+#### FST, $\pi$, and dXY ####
+for ( value in c("fst", "pi", "dxy") ) {
+  ## Load in various value-specific parameters
+  nuc_div_threshold <- 0.99
+  if ( value %in% "pi" ) {
+    names_from <- "pop"
+    col_name <- "avg_pi"
+    lake_list <- all_lakes
+    chrom_y_max <- 0.017
+  } else {
+    names_from <- c("pop1", "pop2")
+    lake_list <- l_lakes
+    if ( value %in% "dxy" ) {
+      col_name <- "avg_dxy"
+      chrom_y_max <- 0.018
+    } else if ( value %in% "fst" ) {
+      col_name <- "avg_wc_fst"
+      chrom_y_max <- 1
+    }
+  }
+  
+  ## Windowed files - Load if already made, create if not
+  windowed_file <- paste0("./popgen_stats/pixy_files/all_", value, "_wide_50kb_10kb_windows.txt")
+  if ( file.exists(windowed_file) ) { 
+    data_wide <- read.table(file=paste0("./popgen_stats/pixy_files/all_", value, "_wide_50kb_10kb_windows.txt"), header=TRUE, sep="\t") %>%
+      mutate(chr_num = as.factor(chr_num))
+    assign(paste("all", value, "wide", sep="_"), data_wide, pos=1)
+    
+  } else if ( file.exists(paste0("./popgen_stats/pixy_files/sitelevel/", value, "/all_", value, "_chr1_wide_50kb_10kb_windows.txt")) ) { ## If the per-chromosome windowed files exist already, but just need to be combined
+    file_list <- list.files(path=paste0("./popgen_stats/pixy_files/sitelevel/", value), pattern=paste0("all_", value, "_chr\\d+_wide_50kb_10kb_windows\\.txt$"), full.names=TRUE)
+    data_list <- lapply(file_list, function(file) { read.table(file, header=TRUE, sep="\t", stringsAsFactors=FALSE) })
+    data_wide <- do.call(rbind, data_list)
+    for ( lake in lake_list ) {
+      value_colname <- paste("mean_value", lake, sep="_")
+      data_wide <- data_wide %>%
+        mutate(outlier = ifelse(get(value_colname) >= quantile(get(value_colname), probs = nuc_div_threshold, na.rm=TRUE), 1, 0)) %>%
+        rename_with(~paste("outlier", lake, sep="_"), "outlier")
+    }
+    if ( value %in% "dxy" ) {
+      data_wide <- data_wide %>%
+        mutate(total_outliers = rowSums(.[,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")]), 
+               outlier_lakes = NA)
+      assign(paste("all", value, "wide", sep="_"), data_wide)
+    } else {
+      data_wide <- data_wide %>%
+        mutate(total_outliers = rowSums(.[,c("outlier_amos", "outlier_bride", "outlier_long","outlier_quon","outlier_pat")]), 
+               outlier_lakes = NA)
+      assign(paste("all", value, "wide", sep="_"), data_wide)
+    }
+    write.table(file=paste0("./popgen_stats/pixy_files/all_", value, "_wide_50kb_10kb_windows.txt"), data_wide, col.names=TRUE, row.names=FALSE, quote=FALSE, sep="\t")
+    
+  } else { ### Recreating the windowed files if desired or needed
+    file_list <- list.files(path=paste0("./popgen_stats/pixy_files/sitelevel/", value), pattern="\\.txt$", full.names=TRUE)
+    data_list <- lapply(file_list, function(file) { read.table(file, header=TRUE, sep="\t", stringsAsFactors=FALSE) })
+    data_long <- do.call(rbind, data_list) %>%
+      #rename_with(~c("avg"), get(colname)) %>%
+      filter(!is.na(get(col_name)))
+
+    data_wide <- pivot_wider(data_long, id_cols=c("chromosome", "window_pos_1", "window_pos_2"), names_from=all_of(names_from), values_from=all_of(col_name)) %>%
+      select(-window_pos_2) %>%
+      merge(., chroms, by.x="chromosome", by.y="chr") %>%
+      mutate(chr_num = as.factor(chr_num),
+             window_pos_1 = as.numeric(window_pos_1))
+    colnames(data_wide) <- tolower(colnames(data_wide))
+
+    ## Subset to just the comparisons of interest if necessary (i.e. for fst and dxy)
+    if ( value %in% "fst" | value %in% "dxy" ) {
+      data_wide <- data_wide %>% select(contains(c("chromosome", "window", "bride"))) %>%
+        rename_with(~c("amos", "long", "quon", "pat"), c("amos_bride", "bride_long", "bride_pat", "bride_quon"))
+    }
+
+    for ( lake in lake_list ) {
+      lake_value <- cbind(data_wide[,1:2], data_wide[,grepl(lake, colnames(data_wide))]) %>%
+        rename_with(~c("chr", "pos", "value")) %>%
+        filter(!is.na(value), chr != "NC_014690.1") %>%
+        mutate(value = as.numeric(value))
+      assign(x=paste(lake, value, sep="_"), value=lake_value, pos=1)
+
+      num_windows <- ceiling(sum(chrom_length[,2]) / 10000) + 5
+      windows <- data.frame("chr"=rep(0, num_windows), "window_pos_1"=rep(0, num_windows), "window_pos_2"=rep(0, num_windows),
+                                "mean_value"=rep(0, num_windows), "num_snps"=rep(0, num_windows))
+      windows_row <- 1
+
+      for (chrom in 1:24) {
+
+        print(paste("Running", lake, "chr", chrom))
+
+        chr_subset <- subset(lake_value, chr %in% chrom_length[chrom,1]) %>%
+          arrange(pos) %>%
+          mutate(snp_count = 1:nrow(.))
+
+        window_start <- 1
+        window_end <- 50000
+        slide <- 10000
+
+        while ( window_start + 40000 <= chrom_length[chrom,2] ) {
+          subset_tmp <- subset(chr_subset, pos >= window_start & pos <= window_end)
+
+          windows$chr[windows_row] <- chrom_length[chrom,1]
+          windows$window_pos_1[windows_row] <- window_start
+          windows$window_pos_2[windows_row] <- window_end
+          windows$mean_value[windows_row] <- mean(subset_tmp$value, na.rm=TRUE)
+          windows$num_snps[windows_row] <- nrow(subset_tmp)
+
+          window_start <- window_start + slide
+          if ( window_end + slide <= chrom_length[chrom,2] ) { window_end <- window_end + slide }
+          else if ( window_end + slide > chrom_length[chrom,2] ) { window_end <- chrom_length[chrom,2] }
+          windows_row <- windows_row + 1
+        }
+      }
+
+      print(summary(windows$num_snps))
+      windows <- subset(windows, !is.na(mean_value)) %>%
+        merge(., chroms, by="chr") %>%
+        mutate(chr_num = as.factor(chr_num))
+
+      if ( value %in% "fst" | value %in% "dxy" ) {
+        windows <- windows %>%
+          mutate(outlier = ifelse(mean_value >= quantile(mean_value, probs = nuc_div_threshold, na.rm=TRUE), 1, 0)) %>%
+          rename_with(~paste("outlier", lake, sep="_"), "outlier")
+      } else {
+        windows <- windows %>%
+          mutate(outlier = ifelse(mean_value <= quantile(mean_value, probs = nuc_div_threshold, na.rm=TRUE), 1, 0)) %>%
+          rename_with(~paste("outlier", lake, sep="_"), "outlier")
+      }
+      assign(x=paste(lake, "windows", sep="_"), value=windows, pos=1)
+    }
+    if ( value %in% "fst" | value %in% "dxy" ) {
+      data_wide <- merge(amos_windows, long_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), suffixes=c("_amos", "_long"), all=TRUE) %>%
+        merge(., quon_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), all=TRUE) %>%
+        merge(., pat_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), suffixes=c("_quon", "_pat"), all=TRUE) %>%
+        mutate(total_outliers = rowSums(.[,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")]),
+               outlier_lakes = NA,
+               window_pos_1 = as.numeric(window_pos_1),
+               window_pos_2 = as.numeric(window_pos_2)) %>%
+        filter(!is.na(total_outliers))
+    } else {
+      data_wide <- merge(amos_windows, bride_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), suffixes=c("_amos", "_bride"), all=TRUE) %>%
+        merge(., long_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), all=TRUE) %>%
+        merge(., quon_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), suffixes=c("_long", "_quon"), all=TRUE) %>%
+        merge(., pat_windows, by=c("chr", "window_pos_1", "window_pos_2", "chr_num"), all=TRUE) %>%
+        rename_with(~c("mean_value_pat", "num_snps_pat"), c("mean_value", "num_snps")) %>%
+        mutate(total_outliers = rowSums(.[,c("amos_outlier", "bride_outlier", "long_outlier", "pat_outlier", "quon_outlier")]),
+               outlier_lakes = NA,
+               window_pos_1 = as.numeric(window_pos_1),
+               window_pos_2 = as.numeric(window_pos_2)) %>%
+        filter(!is.na(total_outliers))
+    }
+  }
+
+  
+  ### Chromosome-wide graphing & other metrics
+  # Calculate the total number of outliers per window
+  if ( value %in% "fst" | value %in% "dxy" ) {
+    for ( i in 1:nrow(data_wide) ) {
+      
+      if ( data_wide$total_outliers[i] == 1 ) {
+        lake <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))
+        )
+        data_wide$outlier_lakes[i] <- lake
+      } 
+      
+      else if ( data_wide$total_outliers[i] == 2 ) {
+        lake1 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[1])
+        lake2 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[2])
+        data_wide$outlier_lakes[i] <- paste(lake1, lake2, sep="_")
+      } 
+      
+      else if ( data_wide$total_outliers[i] == 3 ) {
+        lake1 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[1])
+        lake2 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[2])
+        lake3 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[3])
+        data_wide$outlier_lakes[i] <- paste(lake1, lake2, lake3, sep="_")
+      } 
+      
+      else if ( data_wide$total_outliers[i] == 4 ) {
+        data_wide$outlier_lakes[i] <- paste("amos", "long", "pat", "quon", sep="_")
+      }
+    }
+    ## Pi has 5 lakes, so it needs a separate loop
+  } else {
+    for ( i in 1:nrow(data_wide) ) {
+      
+      if ( data_wide$total_outliers[i] == 1 ) {
+        lake <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride", "outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))
+        )
+        data_wide$outlier_lakes[i] <- lake
+      } 
+      
+      else if ( data_wide$total_outliers[i] == 2 ) {
+        lake1 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[1])
+        lake2 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[2])
+        data_wide$outlier_lakes[i] <- paste(lake1, lake2, sep="_")
+      } 
+      
+      else if ( data_wide$total_outliers[i] == 3 ) {
+        lake1 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[1])
+        lake2 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[2])
+        lake3 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[3])
+        data_wide$outlier_lakes[i] <- paste(lake1, lake2, lake3, sep="_")
+      }
+      
+      else if ( data_wide$total_outliers[i] == 4 ) {
+        lake1 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[1])
+        lake2 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[2])
+        lake3 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[3])
+        lake4 <- gsub(pattern=".+_(.+)", replacement="\\1", x=as.character(names(which(
+          apply(data_wide[i,c("outlier_bride","outlier_amos","outlier_long","outlier_quon","outlier_pat")], 2, function(r) any(r %in% 1))
+        )))[4])
+        data_wide$outlier_lakes[i] <- paste(lake1, lake2, lake3, lake4, sep="_")
+      } 
+      
+      else if ( data_wide$total_outliers[i] == 5 ) {
+        data_wide$outlier_lakes[i] <- paste("bride", "amos", "long", "pat", "quon", sep="_")
+      }
+    }
+  }
+  
+  ## Graph each lake separately
+  for ( lake in lake_list ) local({
+    lake <- lake
+    value_df <- data_wide %>%
+      select(contains(c("chr", "window_pos_1", "window_pos_2", colnames(.[which(grepl(lake, colnames(data_wide)))]), "total_outliers", "outlier_lakes"))) %>%
+      mutate(avg_window = (window_pos_1 + window_pos_2) / 2,
+             chr_num = factor(chr_num)) %>%
+      rename_with(~c("avg_value", "num_snps", "outlier"), 5:7) %>%
+      filter(!is.na(avg_value))
+    
+    print(paste0(lake, " mean ", value, ": ", signif(mean(value_df$avg_value), 4)), pos=1)
+    print(paste("se: ", signif(mean_se(value_df$avg_value)$ymax - mean_se(value_df$avg_value)$y, 4)), pos=1)
+    
+    
+    ### Chromosomal graphs ###
+    print(quantile(value_df$avg_value, probs = nuc_div_threshold), pos=1)
+    
+    ## All chromosomes - Fig. S2
+    # Remove some non-significant points from the graph for a smaller file size and easier manipulation
+    if ( value %in% "dxy" | value %in% "pi" ) {
+      nonsig_count <- 1
+      value_df_subset <- value_df[0,]
+      for ( row_num in 1:nrow(value_df) ) {
+        if ( nonsig_count%%10 == 0 ) {
+          value_df_subset <- rbind(value_df_subset, value_df[row_num,])
+          nonsig_count <- nonsig_count + 1
+        } else if ( nonsig_count%%10 != 0 ) { nonsig_count <- nonsig_count + 1 }
+      }
+      value_df_subset <- value_df_subset[-1,] %>%
+        mutate(chr_num = factor(chr_num, levels=c(as.character(seq(1,24)))))
+    } else { 
+      nonsig_count <- 1
+      value_df_subset <- value_df[0,]
+      for ( row_num in 1:nrow(value_df) ) {
+        if ( nonsig_count%%5 == 0 ) {
+          value_df_subset <- rbind(value_df_subset, value_df[row_num,])
+          nonsig_count <- nonsig_count + 1
+        } else if ( nonsig_count%%5 != 0 ) { nonsig_count <- nonsig_count + 1 }
+      }
+      value_df_subset <- value_df_subset[-1,] %>%
+        mutate(chr_num = factor(chr_num, levels=c(as.character(seq(1,24)))))
+    }
+    
+    value_plot <<- subset(value_df_subset, outlier == 0) %>%
+      ggplot(., aes(x=avg_window, y=avg_value, col=chr_num)) +
+        geom_point() +
+        geom_hline(aes(yintercept = quantile(value_df$avg_value, probs = nuc_div_threshold), color = get(paste0(lake, "_col")))) +
+        geom_point(data=subset(value_df, outlier %in% 1), aes(x=avg_window, y=avg_value, col=get(paste0(lake, "_col"))))+
+        scale_color_manual(values = c(rep(c("lightgrey", "darkgrey"), 12), get(paste0(lake, "_col")))) +
+        facet_grid( ~ chr_num, scales = "free_x", switch = "x", space = "free_x") +
+        theme_minimal() +
+        xlab("Chromosome") +
+        scale_y_continuous(name=paste(lake, value), limits=c(0, chrom_y_max)) +
+        theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+              panel.spacing = unit(0.05, "cm"),
+              panel.grid = element_blank(),
+              strip.background = element_blank(),
+              strip.placement = "outside",
+              legend.position = "none",
+              axis.line.x = element_line(linewidth = 0.5, linetype = "solid", color = "black"))
+    
+    ## Adding on 2, 3, and 4-way points to the above plot for FST and dXY
+    if ( value == "dxy" | value == "fst" ) {
+      value_plot2 <<- value_plot + 
+        geom_point(data=subset(value_df, total_outliers %in% 2 & outlier_lakes %like% lake),
+                   aes(x=window_pos_1 + 25000, y=avg_value, col=two_lakes_col)) +
+        geom_point(data=subset(value_df, total_outliers %in% 3 & outlier_lakes %like% lake),
+                   aes(x=window_pos_1 + 25000, y=avg_value, col=three_lakes_col), shape=17, size=2) +
+        geom_point(data=subset(value_df, total_outliers %in% 4),
+                   aes(x=window_pos_1 + 25000, y=avg_value, col=four_lakes_col), shape=18, size=3) +
+        scale_color_manual(values=c(rep(c(chrom1, chrom2), 12), get(paste0(lake, "_col")), two_lakes_col, three_lakes_col, four_lakes_col))
+    } else {
+      value_plot2 <<- value_plot
+    }
+
+    
+    ### Only the chromosomes with pi/dxy 4-way outliers - Fig. 4 A-C
+    value_df_zoom <- subset(value_df, chr_num == 5 | chr_num == 20)
+
+    # Remove some non-significant points from the graph for a smaller file size and easier manipulation
+    if ( value %like% "dxy" | value %like% "pi" ) {
+      value_df_zoom_subset <- merge(value_df_zoom, value_df_subset[,c("chr", "avg_window")], by=c("chr", "avg_window")) %>%
+        mutate(chr_num = factor(chr_num, levels=c(as.character(seq(1,24)))))
+    } else {
+      value_df_zoom_subset <- subset(value_df_zoom, outlier == 0)
+    }
+    
+    value_plot_zoom <<- ggplot(value_df_zoom_subset, aes(x=avg_window, y=avg_value, col=chr_num)) +
+        geom_point() +
+        geom_smooth(data=value_df_zoom, method = "loess", linewidth = 0.5, se = FALSE, color = "black", span = 0.05, na.rm=TRUE) +
+        geom_hline(aes(yintercept = quantile(value_df$avg_value, probs = nuc_div_threshold), color="outliers")) +
+        geom_point(data=subset(value_df_zoom, outlier == 1), aes(x=avg_window, y=avg_value, col="outliers")) +
+        geom_point(data=subset(value_df_zoom, chr_num == 5 & ((window_pos_1 >= 28200001 & window_pos_2 <= 28450000))), aes(x=avg_window, y=avg_value, col="balsel"), shape=18, size=3) +
+        geom_point(data=subset(value_df_zoom, chr_num == 20 & ((window_pos_1 >= 8930001 & window_pos_2 <= 9410000))), aes(x=avg_window, y=avg_value, col="balsel"), shape=18, size=3) +
+        scale_color_manual(values = c("lightgrey", "darkgrey", "outliers"=get(paste0(lake, "_col")), "balsel"=three_lakes_col)) +
+        facet_grid( ~ chr_num, scales = "free_x", switch = "x", space = "free_x") +
+        theme_cowplot() +
+        xlab("Chromosome") +
+        scale_y_continuous(name=paste(lake, value), limits=c(0, chrom_y_max)) +
+        theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+              panel.spacing = unit(0.05, "cm"),
+              panel.grid = element_blank(),
+              strip.background = element_blank(),
+              strip.placement = "outside",
+              legend.position = "none",
+              axis.line.x = element_line(linewidth = 0.5, linetype = "solid", color = "black"))
+
+    ## Remove the x-axis labels from all but Pat
+    if ( lake != "pat" ) {
+      value_plot2 <- value_plot2 +
+        theme(axis.title.x = element_blank(), strip.text.x = element_blank())
+      value_plot_zoom <- value_plot_zoom +
+        theme(axis.title.x = element_blank(), strip.text.x = element_blank())
+    }
+    
+    ## Save each lake's files
+    assign(paste(lake, "plot", sep="_"), value_plot2, pos=1)
+    assign(paste(lake, "plot_zoom", sep="_"), value_plot_zoom, pos=1)
+    assign(paste(lake, value, sep="_"), value_df, pos=1)
+  })
+  
+  ## Grid the per-lake manhattan plots into one graph per nucleotide diversity value
+  if ( value %in% "pi" ) {
+    value_grid <- plot_grid(bride_plot, NULL, amos_plot, NULL, long_plot, NULL, quon_plot, NULL, pat_plot, nrow=9, align="hv",  axis="b", rel_heights=c(0.98,-0.3,0.98,-0.3,0.98,-0.3,0.98,-0.3,1))
+    value_grid_zoom <- plot_grid(bride_plot_zoom, NULL, amos_plot_zoom, NULL, long_plot_zoom, NULL, quon_plot_zoom, NULL, pat_plot_zoom, nrow=9, align="hv", axis="b", rel_heights=c(0.93,-0.3,0.93,-0.3,0.93,-0.3,0.93,-0.3,1))
+  } else {
+    value_grid <- plot_grid(amos_plot, NULL, long_plot, NULL, quon_plot, NULL, pat_plot, nrow=7, align="hv", axis="b", rel_heights=c(0.95,-0.2,0.95,-0.2,0.95,-0.2,1))
+    value_grid_zoom <- plot_grid(amos_plot_zoom, NULL, long_plot_zoom, NULL, quon_plot_zoom, NULL, pat_plot_zoom, nrow=7, align="hv",  axis="b", rel_heights=c(1,-0.2,1,-0.2,1,-0.,1))
+  }
+
+  assign(paste(value, "grid", sep="_"), value_grid)
+  assign(paste(value, "grid_zoom", sep="_"), value_grid_zoom)
+}
+### Figure 4A-C
+fst_grid_zoom
+dxy_grid_zoom
+pi_grid_zoom
+chr5_chr20_plotgrid <- plot_grid(fst_grid_zoom, dxy_grid_zoom, pi_grid_zoom, nrow=3)
+ggsave(paste(out_dir0, "filtering_redone_pairwise_fst_dxy_pi_sliding_50kb_10kb_50kb_001_chr5_chr20.pdf"), chr5_chr20_plotgrid, height=20, width=10)
+
+
+### Figure S2
+fst_grid
+dxy_grid
+pi_grid
+fst_dxy_pi_plotgrid <- plot_grid(fst_grid, dxy_grid, pi_grid, nrow=3)
+fst_dxy_pi_plotgrid
+ggsave(paste0(out_dir, "filtering_redone_pairwise_fst_dxy_pi_sliding_50kb_10kb_001_sharedpoints.pdf"), fst_dxy_pi_plotgrid, height=12, width=18)
+
+## Saving Fig. S2 fst, pi, and dxy separately for easier illustrator work
+ggsave(paste0(out_dir, "filtering_redone_pairwise_fst_sliding_50kb_10kb_001_sharedpoints.pdf"), fst_grid, height=4, width=18)
+ggsave(paste0(out_dir, "filtering_redone_pairwise_dxy_sliding_50kb_10kb_001_sharedpoints.pdf"), dxy_grid, height=4, width=18)
+ggsave(paste0(out_dir, "filtering_redone_pairwise_pi_sliding_50kb_10kb_001_sharedpoints.pdf"), pi_grid, height=5, width=18)
+
+
+
+#### Testing averages specifically within balancing selection regions (added within text) ####
+for ( region in c("chr5_28200001-28400000", "chr20_8950001-9400000") ) {
+  for ( value in c("fst", "pi", "dxy") ) {
+    bal_subset <- subset(get(paste("all", value, "wide", sep="_")), chr_num %in% gsub("chr", "", str_split_i(region, "_", 1)) & window_pos_1 >= str_split_i(str_split_i(region, "_", 2), "-", 1) & window_pos_2 <= str_split_i(str_split_i(region, "_", 2), "-", 2))
+    if ( value %like% "pi" ) { lake_list <- all_lakes
+    } else { lake_list <- l_lakes }
+    sd_list <- c()
+    for ( lake in lake_list ) {
+      mean_val <- mean(bal_subset[[paste("mean_value", lake, sep="_")]], na.rm=TRUE)
+      print(paste0(region, " ", value, " ", lake, " mean: ", signif(mean_val, digits=4),
+                   " (", round(sd(bal_subset[[paste("mean_value", lake, sep="_")]], na.rm=TRUE)/sqrt(nrow(bal_subset)), digits=4), ")"))
+      sd_val <- (mean_val - mean(get(paste("all", value, "wide", sep="_"))[[paste("mean_value", lake, sep="_")]], na.rm=TRUE)) / sd(get(paste("all", value, "wide", sep="_"))[[paste("mean_value", lake, sep="_")]], na.rm=TRUE)
+      print(paste(signif(sd_val, digits=4), "sd", ifelse(sd_val > 0, "above", "below"), "the mean"))
+      sd_list <- c(sd_list, sd_val)
+    }
+    print(paste0(region, " ", value, ": average ", signif(mean(sd_list), digits=4), ifelse(mean(sd_list) > 0, " above", " below"), " the mean"))
+  }
+  rm(sd_list, mean_val, sd_val)
+}
+
+
+
+#### Figure S3 ####
+annotation_df <- read.delim("./GCF_018492685.1_fAloSap1.pri_genomic.gtf.gz", header = FALSE, sep = "\t", skip = 4,
+                            col.names=c("chr", "type", "type2", "start", "stop", "blank1", "strand", "blank2", "info")) %>%
+  filter(type %in% "Gnomon" & type2 %in% "gene") %>%
+  select(-c(blank1, blank2)) %>%
+  separate_wider_delim(info, delim="; ", too_few="align_start",
+                       names=c("gene_name1", NA, "GeneID", "gbkey", "gene_name2", "gene_biotype", NA, NA)) %>%
+  mutate(gene_name1 = unlist(strsplit(gene_name1, split="gene_id\ "))[c(seq(2,2*nrow(.), 2))], 
+         GeneID = unlist(strsplit(GeneID, split="db_xref GeneID:"))[c(seq(2,2*nrow(.), 2))], 
+         gbkey = unlist(strsplit(gbkey, split="gbkey\ "))[c(seq(2,2*nrow(.), 2))], 
+         gene_name2 = unlist(strsplit(gene_name2, split="gene\ "))[c(seq(2,2*nrow(.), 2))], 
+         gene_biotype = unlist(strsplit(gene_biotype, split="gene_biotype\ "))[c(seq(2,2*nrow(.), 2))]) %>%
+  filter(gene_name1 %in% gene_name2) %>%
+  select(-c(gene_name1, gbkey, gene_biotype)) %>%
+  rename_with(~c("ID", "name"), c(GeneID, gene_name2))
+
+## Plot site-level pi for any region of FST and dXY outliers:
+for ( value in c("dxy", "fst") ) {
+  all_nuc_outliers <- get(paste("all", value, "wide", sep="_"))
+  
+  n_peaks <- 500
+  highest_peaks_all <- c()
+  ## Only look at 4-way outliers (but can change to look at others)
+  for ( outlier_count in c(4) ) {
+    highest_peaks <- data.frame("peak_num"=rep(0, n_peaks), "chr"=rep(0, n_peaks), "window_pos_1"=rep(0, n_peaks), "window_pos_2"=rep(0, n_peaks), "chr_num"=rep(0, n_peaks), "n_windows"=rep(0, n_peaks), "lake"=rep(c("amos, long, quon, pat"), n_peaks), "reason"=rep(0, n_peaks))#, "reason2"=rep(0, n_peaks))
+    fst_dxy_outliers <- subset(all_nuc_outliers, total_outliers == outlier_count)
+      
+    ## Break the loop if no such outliers exist
+    if ( dim(fst_dxy_outliers)[1] == 0 ) {
+      break
+    }
+    
+    row_num <- 1
+    peak_num <- 1
+    for ( i in 1:nrow(fst_dxy_outliers) ) {
+      current_peak <- fst_dxy_outliers[i,]
+      peaks_subset <- subset(highest_peaks, chr %in% current_peak$chr)
+      if ( dim(peaks_subset)[1] == 0 ) {  #Are there peaks on this chromosome yet? NO - 
+        highest_peaks$peak_num[row_num] <- peak_num
+        highest_peaks$chr[row_num] <- current_peak$chr
+        highest_peaks$window_pos_1[row_num] <- current_peak$window_pos_1
+        highest_peaks$window_pos_2[row_num] <- current_peak$window_pos_2
+        highest_peaks$chr_num[row_num] <- current_peak$chr_num
+        highest_peaks$n_windows[row_num] <- 1
+        highest_peaks$reason[row_num] <- paste(value, outlier_count, "outlier", sep="_")
+        row_num <- row_num + 1
+        peak_num <- peak_num + 1
+      } else {  #YES - Now subset windows on that chromosome to find other peaks within +-10kb of the current peak
+        peaks_subset <- subset(peaks_subset, (window_pos_1  >= (current_peak$window_pos_1 - 10000) &
+                                       window_pos_1 <= (current_peak$window_pos_1 + 10000)) | 
+                                       (window_pos_2 >= (current_peak$window_pos_2 - 10000) &
+                                       window_pos_2 <= (current_peak$window_pos_2 + 10000)) )
+        if ( dim(peaks_subset)[1] == 0 ) {  #Is there a peak on this chromosome within 10kb of this new peak? - NO
+          highest_peaks$peak_num[row_num] <- peak_num
+          highest_peaks$chr[row_num] <- current_peak$chr
+          highest_peaks$window_pos_1[row_num] <- current_peak$window_pos_1
+          highest_peaks$window_pos_2[row_num] <- current_peak$window_pos_2
+          highest_peaks$chr_num[row_num] <- current_peak$chr_num
+          highest_peaks$n_windows[row_num] <- 1
+          highest_peaks$reason[row_num] <- paste(value, outlier_count, "outlier", sep="_")
+          row_num <- row_num + 1
+          peak_num <- peak_num + 1
+        } else { #YES - Update highest_peaks with new peak minimum & maximum, count 1 more individual with that peak
+          peaks_subset$window_pos_1 <- if_else(current_peak$window_pos_1 < peaks_subset$window_pos_1,
+                                              current_peak$window_pos_1, peaks_subset$window_pos_1)
+          peaks_subset$window_pos_2 <- if_else(current_peak$window_pos_2 > peaks_subset$window_pos_2,
+                                            current_peak$window_pos_2, peaks_subset$window_pos_2)
+          peaks_subset$n_windows <- peaks_subset$n_windows + 1
+          peaks_subset$reason <- paste(unique(c(peaks_subset$reason, paste(value, outlier_count, "outlier", sep="_"))), collapse=' ')
+          highest_peaks[highest_peaks$peak_num == peaks_subset$peak_num, ] <- peaks_subset
+        }
+      }
+    }
+    highest_peaks <- highest_peaks %>%
+      filter(n_windows != 0)
+    highest_peaks_all <- rbind(highest_peaks_all, highest_peaks)
+    rm(highest_peaks, peaks_subset, row_num, peak_num)
+  }
+      
+  # ## Adding the names of overlapping genes
+  genes_value <- c()
+  value_num <- 1
+  for (i in 1:nrow(highest_peaks_all)) {
+    # Either the gene 1) starts or 2) stops within the range, or 3) reaches across the whole range
+    gene_subset <- subset(annotation_df, chr %in% highest_peaks_all$chr[i] & (
+      ( start >= highest_peaks_all$window_pos_1[i] & start <= highest_peaks_all$window_pos_2[i] ) |
+        ( stop >= highest_peaks_all$window_pos_1[i] & stop <= highest_peaks_all$window_pos_2[i] ) |
+        ( start <= highest_peaks_all$window_pos_1[i] & stop >= highest_peaks_all$window_pos_2[i] )))
+  
+    if ( dim(gene_subset)[1] == 0 )  {
+      highest_peaks_all$gene_overlap_names[i] <- NA
+    } else {
+      gene_names <- gene_subset %>%
+        group_by(chr)  %>%
+        summarise(name = paste(name, collapse = ", "))
+      highest_peaks_all$gene_overlap_names[i] <- gene_names[1]
+    }
+    if ( value_num == 1 ) { genes_value <- gene_subset }
+    else { genes_value <- rbind(genes_value, gene_subset) }
+    value_num <- value_num + 1
+  }
+  assign(x=paste("genes", value, sep="_"), unique(genes_value))
+  
+  highest_peaks_all <- highest_peaks_all[,-1]
+  assign(paste0(value, "_highest_peaks"), highest_peaks_all)
+  # write.table(file=paste0(out_dir, "all_", value, "_fourway_peaks_genes_labeled_table_s3.txt"), x=apply(highest_peaks_all,2,as.character), row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+}
+
+
+#### Plot dXY and Pi within FST 4-way outliers ####
+file_list <- list.files(path="/Users/corcorri/Documents/Denver/Manuscript/popgen_stats/pixy_files/sitelevel/fst", pattern="\\.txt$", full.names=TRUE)
+data_list <- lapply(file_list, function(file) { read.table(file, header=TRUE, sep="\t", stringsAsFactors=FALSE) })
+fst_sitelevel <- do.call(rbind, data_list) %>%
+  filter(!is.na(avg_wc_fst)) %>%
+  mutate(avg_wc_fst = as.numeric(avg_wc_fst)) %>%
+  pivot_wider(., id_cols=c("chromosome", "window_pos_1", "window_pos_2"), names_from=c("pop1", "pop2"), values_from="avg_wc_fst") %>%
+  select(-window_pos_2) %>%
+  mutate(window_pos_1 = as.numeric(window_pos_1)) %>% 
+  select(contains(c("chr", "window", "Bride"))) %>%
+  rename_with(~c("amos_fst", "long_fst", "quon_fst", "pat_fst"), c("Amos_Bride", "Bride_Long", "Bride_Pat", "Bride_Quon"))
+
+for ( i in 1:nrow(subset(highest_peaks_all, reason %like% "fst")) ) {
+  chrnum <- highest_peaks_all$chr_num[i]
+  start <- floor((highest_peaks_all$window_pos_1[i] - 50000)/1e6)*1e6+1
+  end <- ceiling((highest_peaks_all$window_pos_2[i] + 50000)/1e6)*1e6
+  
+  if ( i == 1 ) { file_list <- c("chr1_3000001-4000000", "chr1_4000001-5000000")
+  } else if ( i == 2 ) { file_list <- c("chr2_42000001-43000000")
+  } else if ( i == 3 ) { file_list <- c("chr3_2000001-3000000")
+  } else if ( i == 4 ) { file_list <- c("chr3_39000001-40000000")
+  } else if ( i == 5 ) { file_list <- c("chr10_37000001-38000000")
+  } else if ( i == 6 ) { file_list <- c("chr13_10000000-11000000")
+  } else if ( i == 7 ) { file_list <- c("chr16_13000001-14000000")
+  } else if ( i == 8 ) { file_list <- c("chr17_3000001-4000000")
+  } else if ( i == 9 ) { file_list <- c("chr18_28000001-29000000") }
+  pi_file_list <- paste0(rep("/Users/corcorri/Documents/Denver/Manuscript/popgen_stats/pixy_files/sitelevel/pi/", length(file_list)), file_list, rep("_pi_subset.txt", length(file_list)))
+  dxy_file_list <- paste0(rep("/Users/corcorri/Documents/Denver/Manuscript/popgen_stats/pixy_files/sitelevel/dxy/", length(file_list)), file_list, rep("_dxy_subset.txt", length(file_list)))
+  # chr1_3000001-5000000_pi_subset.txt chr2_42000001-43000000_pi_subset.txt chr3_2000001-3000000_pi_subset.txt chr3_39000001-40000000_pi_subset.txt chr10_37000001-38000000_pi_subset.txt chr13_10000001-11000000_pi_subset.txt chr16_13000001-14000000_pi_subset.txt chr17_3000001-4000000_pi_subset.txt chr18_28000001-29000000_pi_subset.txt 
+    
+  ## Read in the files - pi
+  pi_list <- lapply(pi_file_list, function(file) { read.table(file, header=TRUE, sep="\t", stringsAsFactors=FALSE) })
+  pi_long <- do.call(rbind, pi_list) %>%
+    filter(!is.na(avg_pi)) %>%
+    merge(., chroms, by.x="chromosome", by.y="chr") %>%
+    mutate(pop = factor(tolower(pop), levels=all_lakes),
+           chr_num = as.factor(chr_num)) %>%
+    merge(., fst_sitelevel, by=c("chromosome", "window_pos_1")) %>%
+    #filter(pop != "bride") ## If you want to remove/add in Bride's pi in this region
+    subset(., window_pos_1 >= highest_peaks_all$window_pos_1[i] - 100000 & window_pos_1 <= highest_peaks_all$window_pos_2[i] + 100000)
+  
+  # Plot
+  pi_sitelevel <- ggplot(pi_long, aes(x=window_pos_1, y=avg_pi, color=pop)) +
+    annotate(geom="rect", xmin=highest_peaks_all$window_pos_1[i], xmax=highest_peaks_all$window_pos_2[i], ymin=0, ymax=1, color="grey50", alpha=0.3) +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=0.72, 
+             label="mean pi_land within window", size=3, color="black") +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=0.68, 
+             label=signif(mean(subset(pi_long, window_pos_1 >= highest_peaks_all$window_pos_1[i] & window_pos_1 <= highest_peaks_all$window_pos_2[i])$avg_pi, na.rm=TRUE), digits=4), size=3, color="black") +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=0.72, 
+             label="mean pi_land outside window", size=3, color="black") +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=0.68, 
+             label=signif(mean(subset(pi_long, window_pos_1 < highest_peaks_all$window_pos_1[i] | window_pos_1 > highest_peaks_all$window_pos_2[i])$avg_pi, na.rm=TRUE), digits=4), size=3, color="black") +
+    geom_point(alpha=0.5) +
+    geom_line(alpha=0.3) +
+    scale_x_continuous(name=paste("Chr", chrnum)) +
+    scale_y_continuous(limits=c(0,1), name="Site-level pi") +
+    scale_color_manual(values=colors) +
+    theme_cowplot() + 
+    theme(legend.position="none")
+  print(pi_sitelevel)
+  
+  if ( chrnum == 18) {
+    for ( lake in all_lakes ) {
+      mean_pi <- mean(subset(pi_long, window_pos_1 < highest_peaks_all$window_pos_1[i] | window_pos_1 > highest_peaks_all$window_pos_2[i] & 
+                               pop %in% lake)$avg_pi, na.rm=TRUE)
+      mean_pi_region <- mean(subset(pi_long, window_pos_1 >= highest_peaks_all$window_pos_1[i] & window_pos_1 <= highest_peaks_all$window_pos_2[i] & 
+                                      pop %in% lake)$avg_pi, na.rm=TRUE)
+      print(paste0(lake, " pi:", mean_pi_region/mean_pi, "x the mean of the surrounding region"))
+    }
+  }
+  
+  ## Read in the files - dxy
+  dxy_list <- lapply(dxy_file_list, function(file) { read.table(file, header=TRUE, sep="\t", stringsAsFactors=FALSE) })
+  dxy_long <- do.call(rbind, dxy_list) %>%
+    filter(!is.na(avg_dxy), 
+           pop1 %like% "Bride" | pop2 %like% "Bride") %>%
+    merge(., chroms, by.x="chromosome", by.y="chr") %>%
+    mutate(pop1 = ifelse(pop1 == "Bride", NA, pop1), 
+           pop2 = ifelse(pop2 == "Bride", NA, pop2),
+           pop = factor(tolower(ifelse(is.na(pop1), pop2, pop1)), l_lakes),
+           chr_num = as.factor(chr_num)) %>%
+    select(-c(pop1, pop2, window_pos_2)) %>%
+    merge(., fst_sitelevel, by=c("chromosome", "window_pos_1")) %>%
+    subset(., window_pos_1 >= highest_peaks_all$window_pos_1[i] - 100000 & window_pos_1 <= highest_peaks_all$window_pos_2[i] + 100000)
+  
+  # Plot
+  dxy_sitelevel <- ggplot(dxy_long, aes(x=window_pos_1, y=avg_dxy, color=pop)) +
+    annotate(geom="rect", xmin=highest_peaks_all$window_pos_1[i], xmax=highest_peaks_all$window_pos_2[i], ymin=0, ymax=1, color="grey50", alpha=0.3) +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=0.72, 
+             label="mean dxy within window", size=3, color="black") +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=0.68, 
+             label=signif(mean(subset(dxy_long, window_pos_1 >= highest_peaks_all$window_pos_1[i] & window_pos_1 <= highest_peaks_all$window_pos_2[i])$avg_dxy, na.rm=TRUE), digits=4), size=3, color="black") +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=0.72, 
+             label="mean dxy outside window", size=3, color="black") +
+    annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=0.68, 
+             label=signif(mean(subset(dxy_long, window_pos_1 < highest_peaks_all$window_pos_1[i] | window_pos_1 > highest_peaks_all$window_pos_2[i])$avg_dxy, na.rm=TRUE), digits=4), size=3, color="black") +
+    geom_point(alpha=0.5) +
+    geom_line(alpha=0.3) +
+    scale_x_continuous(name=paste("Chr", chrnum)) +
+    scale_y_continuous(limits=c(0,1), name="Site-level dXY") +
+    scale_color_manual(values=l_colors) +
+    theme_cowplot() + 
+    theme(axis.title.x = element_blank(), strip.text.x = element_blank(), axis.text.x = element_blank(), legend.position = "none")
+  print(dxy_sitelevel)
+  
+  if ( chrnum == 18) {
+    for ( lake in l_lakes ) {
+      mean_dxy <- mean(subset(dxy_long, window_pos_1 < highest_peaks_all$window_pos_1[i] | window_pos_1 > highest_peaks_all$window_pos_2[i] & 
+                               pop %in% lake)$avg_dxy, na.rm=TRUE)
+      mean_dxy_region <- mean(subset(dxy_long, window_pos_1 >= highest_peaks_all$window_pos_1[i] & window_pos_1 <= highest_peaks_all$window_pos_2[i] & 
+                                      pop %in% lake)$avg_dxy, na.rm=TRUE)
+      print(paste0(lake, " dxy:", mean_dxy_region/mean_dxy, "x the mean of the surrounding region"))
+    }
+  }
+  
+  ## Get site-level LLR and FST for the 3-way LLR and 4-way FST outlier as well
+  if ( i == 9 ) {
+    ## FST
+    region_subset <- merge(fst_sitelevel, chroms, by.x="chromosome", by.y="chr") %>%
+      subset(., window_pos_1 >= highest_peaks_all$window_pos_1[i] - 100000 & window_pos_1 <= highest_peaks_all$window_pos_2[i] + 100000 & chr_num %in% chrnum) %>%
+      rename_with(~l_lakes, c(paste(l_lakes, rep("fst", 4), sep="_"))) %>%
+      pivot_longer(cols=l_lakes, names_to="pop", values_to="avg_fst") %>%
+      mutate(avg_fst = as.numeric(if_else(avg_fst < 0, 0, avg_fst)), 
+             pop = factor(pop, levels=l_lakes)) %>%
+      filter(!is.na(avg_fst))
+    
+    fst_sitelevel_plot <- ggplot(region_subset, aes(x=window_pos_1, y=avg_fst, color=pop)) +
+      annotate(geom="rect", xmin=highest_peaks_all$window_pos_1[i], xmax=highest_peaks_all$window_pos_2[i], ymin=0, ymax=1, color="grey50", alpha=0.3) +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=0.72, 
+               label="mean fst within window", size=3, color="black") +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=0.68, 
+               label=signif(mean(subset(region_subset, window_pos_1 >= highest_peaks_all$window_pos_1[i] & window_pos_1 <= highest_peaks_all$window_pos_2[i])$avg_fst, na.rm=TRUE), digits=4), size=3, color="black") +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=0.72, 
+               label="mean fst outside window", size=3, color="black") +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=0.68, 
+               label=signif(mean(subset(region_subset, window_pos_1 < highest_peaks_all$window_pos_1[i] | window_pos_1 > highest_peaks_all$window_pos_2[i])$avg_fst, na.rm=TRUE), digits=4), size=3, color="black") +
+      geom_point(alpha=0.5) +
+      geom_line(alpha=0.3) +
+      scale_x_continuous(name=paste("Chr", chrnum)) +
+      scale_y_continuous(limits=c(0,1), name="Site-level FST") +
+      scale_color_manual(values=l_colors) +
+      theme_cowplot() + 
+      theme(axis.title.x = element_blank(), strip.text.x = element_blank(), axis.text.x = element_blank(), legend.position = "none")
+    
+    ## LLR - MUST RUN PART OF THE FIGURE 3 SCRIPT TO GET THE PER-SNP OHANA VALUES
+    region_subset <- rbind(amos_ohana_snp, long_ohana_snp, quon_ohana_snp, pat_ohana_snp) %>%
+      subset(., pos >= highest_peaks_all$window_pos_1[i] - 100000 & pos <= highest_peaks_all$window_pos_2[i] + 100000 & chr_num %in% chrnum) %>%
+      mutate(lle_ratio = as.numeric(lle_ratio), 
+             pop = factor(pop, levels=l_lakes)) %>%
+      filter(!is.na(lle_ratio))
+    
+    llr_sitelevel_plot <- ggplot(region_subset, aes(x=pos, y=lle_ratio, color=pop)) +
+      annotate(geom="rect", xmin=highest_peaks_all$window_pos_1[i], xmax=highest_peaks_all$window_pos_2[i], ymin=0, ymax=12, color="grey50", alpha=0.3) +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=11, 
+               label="mean LLR within window", size=3, color="black") +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i]), y=10.5, 
+               label=signif(mean(subset(region_subset, pos >= highest_peaks_all$window_pos_1[i] & pos <= highest_peaks_all$window_pos_2[i])$lle_ratio, na.rm=TRUE), digits=4), size=3, color="black") +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=11, 
+               label="mean LLR outside window", size=3, color="black") +
+      annotate("text", x=((highest_peaks_all$window_pos_2[i] - highest_peaks_all$window_pos_1[i])/2 + highest_peaks_all$window_pos_1[i] + 75000), y=10.5, 
+               label=signif(mean(subset(region_subset, pos < highest_peaks_all$window_pos_1[i] | pos > highest_peaks_all$window_pos_2[i])$lle_ratio, na.rm=TRUE), digits=4), size=3, color="black") +
+      geom_point(alpha=0.5) +
+      geom_line(alpha=0.3) +
+      scale_x_continuous(name=paste("Chr", chrnum)) +
+      scale_y_continuous(limits=c(0,12), name="Site-level LLR") +
+      scale_color_manual(values=l_colors) +
+      theme_cowplot() + 
+      theme(axis.title.x = element_blank(), strip.text.x = element_blank(), axis.text.x = element_blank(), legend.position = "none")
+    
+    ## Plotgrid of all of the relevant metrics
+    pi_dxy_grid <- plot_grid(llr_sitelevel_plot, fst_sitelevel_plot, dxy_sitelevel, pi_sitelevel, nrow=4, rel_heights = c(1, 1, 1, 1.31))
+  } else {
+    pi_dxy_grid <- plot_grid(dxy_sitelevel, pi_sitelevel, nrow=2)
+  }
+  assign(paste0("chr", chr_num, "_", start, "_", end, "_grid"), pi_dxy_grid)
+}
+
+pi_grid <- plot_grid(`chr1_3000001_5e+06_grid`, `chr2_42000001_4.3e+07_grid`, `chr3_2000001_3e+06_grid`, `chr3_39000001_4e+07_grid`, `chr10_37000001_3.8e+07_grid`, `chr13_10000001_1.1e+07_grid`, `chr16_13000001_1.4e+07_grid`, `chr17_3000001_4e+06_grid`, `chr18_28000001_2.9e+07_grid`, nrow=5)
+pi_grid
+ggsave(paste0(out_dir, "fst_fourway_pi_dxy_sitelevel_lines.pdf"), pi_grid, width=12, height=20)
+
+## Just chr18, as is Fig. S3
+`chr18_28000001_2.9e+07_grid`
+ggsave(paste0(out_dir, "chr18_llr_fst_pi_dxy_sitelevel_lines.pdf"), `chr18_28000001_2.9e+07_grid`, width=10, height=6)
+
+
+#### Table S2 - Adding balancing selection dXY outliers #### 
+## Load in the dXY and meanLLR outliers, subsetting the dXY outliers to only those within the regions of balancing selection
+dxy_table <- read.table(paste0(out_dir, "all_dxy_fourway_peaks_genes_labeled_table_s3.txt"), header=TRUE, sep="\t") %>%
+  filter((chr == "NC_055961.1" & window_pos_1 == 28190001) | (chr == "NC_055976.1" & window_pos_1 == 8930001) ) %>%
+  mutate(reason = ifelse(reason == "dxy_4_outlier", "dxy_4_outlier, pi_5_outlier", reason))
+meanLLR_pairwise_table <- read.table(paste0(out_dir, "all_shared_meanLLR_peaks_genes_labeled_table_s3.txt"), header=TRUE, sep="\t") %>%
+  select(-c("peak_label"))
+
+## Combine the tables
+all_peaks <- rbind(dxy_table, meanLLR_pairwise_table) %>%
+  arrange(chr_num, window_pos_1)
+
+write.table(file=paste0(out_dir, "all_fst_dxy_meanLLR_2-4_shared_peaks_genes_labeled_table_s3.txt"), all_peaks, row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+
+#### Table S3 - Pairwise dXY in outlier regions ####
+chr5_dxy <- read.table("./popgen_stats/pixy_files/sitelevel/dxy/chr5_28000001-29000000_dxy_subset.txt", header=TRUE, sep="\t") %>%
+  filter(window_pos_1 >= 28200001 & window_pos_1 <= 28450000)
+chr20_dxy <- rbind(read.table("./popgen_stats/pixy_files/sitelevel/dxy/chr20_8000001-9000000_dxy_subset.txt", header=TRUE, sep="\t"), 
+                   read.table("./popgen_stats/pixy_files/sitelevel/dxy/chr20_9000001-9999999_dxy_subset.txt", header=TRUE, sep="\t")) %>%
+  filter(window_pos_1 >= 8930001 & window_pos_1 <= 9410000)
+
+for ( region in c("chr5_28200001-284500000", "chr20_8930001-9410000") ) local({ 
+  ## Region-specific variables
+  region_chr_num <- as.numeric(gsub(pattern="chr(.+)_.+-.+", region, replacement="\\1"))
+  range_start <- as.numeric(gsub(pattern=".+_(.+)-.+", region, replacement="\\1"))
+  range_end <- as.numeric(gsub(pattern=".+_.+-(.+)", region, replacement="\\1"))
+
+  print(paste0("Running region ", region, ": dXY"), pos=1)
+  
+  chrom_wider <- pivot_wider(get(paste0("chr", region_chr_num, "_dxy"), pos=1), 
+                             id_cols=c("chromosome", "window_pos_1", "window_pos_2"), names_from=all_of(c("pop1", "pop2")), values_from="avg_dxy")
+  
+  ## Create pairwise average dfs for circle plots
+  dxy_pairwise <- subset(chrom_wider, window_pos_1 >= range_start & window_pos_1 <= range_end)[,-3] %>%
+    rename_with(tolower)
+  dxy_triangle <- data.frame("bride"=rep(NA,5), "amos"=rep(NA,5),  "long"=rep(NA,5), "quon"=rep(NA,5), "pat"=rep(NA, 5), 
+                                row.names = c("bride", "amos", "long", "quon", "pat"))
+  
+  for ( rowlake in c("amos", "bride", "long", "pat", "quon") ) {
+    for ( collake in c("amos", "bride", "long", "pat", "quon") ) {
+      if ( rowlake != collake ) {
+        colname <- paste(rowlake, collake, sep="_")
+        if ( colname %in% colnames(dxy_pairwise) ) { 
+          if ( (rowlake=="bride" || rowlake=="amos" || rowlake=="long") && (collake=="long" || collake=="pat" || collake=="quon") ) {
+            dxy_triangle[collake, rowlake] <- mean(dxy_pairwise[[colname]], na.rm=TRUE)
+          } else {
+            dxy_triangle[rowlake, collake] <- mean(dxy_pairwise[[colname]], na.rm=TRUE)
+          }
+        }
+      }
+    }
+  }
+  assign(paste0("dxy_average_chr", region_chr_num), as.matrix(dxy_triangle), pos=1)
+})
+
+```
+
+
+``` {r Figure 4F-G, S4 - BetaScan}
+for ( chr in c("NC_055961.1", "NC_055976.1")) {
+  if ( chr %in% "NC_055961.1" ) { chr_num <- 5
+  } else if ( chr %in% "NC_055976.1" ) { chr_num <- 20 }
+
+  for ( lake in c("bride", "amos", "long", "pat", "quon")) {    
+    b1 <- read.table(paste("./betascan/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1", lake, "maxMissing75_HWE1e-10", chr, "w2400_m015_p20.betascores.txt", sep="_"), sep="\t", header=TRUE) %>%
+      rename_with(~c("pos", "beta1")) %>%
+      mutate(lake = lake, 
+             zscore = (beta1 - mean(beta1, na.rm=TRUE)) / sd(beta1))
+    assign(paste(lake, chr_num, "b1", sep="_"), b1)
+  }
+  
+  value <- "beta1"
+  
+  ## First combine all pop-specific files into one dataframe for graphing
+  b1_rbind <- rbind(get(paste("bride", chr_num, "b1", sep="_")), get(paste("amos", chr_num, "b1", sep="_")), 
+                    get(paste("long", chr_num, "b1", sep="_")), get(paste("quon", chr_num, "b1", sep="_")), 
+                    get(paste("pat", chr_num, "b1", sep="_"))) %>%
+    mutate(lake = factor(lake, levels=c("bride", "amos", "long", "quon", "pat")))
+  assign(paste("all_pops", chr_num, "b1", sep="_"), b1_rbind)
+  
+  ## Subset the dataframe to only the top 1% and bottom 99% to differentiate colors on the graph (1% outliers are colored)
+  top_value <- 0.95
+  b1_top <- subset(b1_rbind, (lake %in% "bride" & get(value) >= quantile(get(paste("bride", chr_num, "b1", sep="_"))[[value]], top_value)) | 
+                     (lake %in% "amos" & get(value) >= quantile(get(paste("amos", chr_num, "b1", sep="_"))[[value]], top_value)) |
+                     (lake %in% "long" & get(value) >= quantile(get(paste("long", chr_num, "b1", sep="_"))[[value]], top_value)) |
+                     (lake %in% "pat" & get(value) >= quantile(get(paste("pat", chr_num, "b1", sep="_"))[[value]], top_value)) |
+                     (lake %in% "quon" & get(value) >= quantile(get(paste("quon", chr_num, "b1", sep="_"))[[value]], top_value)) )%>%
+    mutate(lake = factor(lake, levels=c("bride", "amos", "long", "quon", "pat")))
+  assign(paste("all_pops", chr_num, "b1_top", sep="_"), b1_top)
+  
+  b1_bottom <- anti_join(b1_rbind, b1_top, by=c("pos", "beta1", "lake"))
+  
+  
+  ## Plotting 
+  if ( chr_num == 5 ) { 
+    region_start <- 28200001
+    region_end <- 28450000
+  } else if ( chr_num == 20 ) { 
+    region_start <- 8930001
+    region_end <- 9410000
+  }
+    
+  rect_min <- min(b1_rbind[[value]])
+  rect_max <- max(b1_rbind[[value]]) + (range(b1_rbind[[value]])[2] - range(b1_rbind[[value]])[1])*0.05 ## Window rect +5% taller than the range
+  gene_top <- max(b1_rbind[[value]])*0.8
+  gene_mid <- max(b1_rbind[[value]])*0.75
+  gene_bot <- max(b1_rbind[[value]])*0.7
+  
+  
+  ## Zoom on just the -800Kb to +1000Kb around the 4-way region
+  b1_zoom <- subset(b1_rbind, pos >= (region_start - 800000) & pos <= (region_end + 1000000))
+  chrom_zoom <- ggplot(b1_zoom, aes(x=pos, y=get(value), group=lake, color=lake)) +
+    annotate(geom="rect", xmin=region_start, xmax=region_end, ymin=rect_min, ymax=rect_max, color="grey50", alpha=0.3) +
+    geom_line(alpha=0.5) +
+    scale_color_manual(values=c(colors, "grey20")) +
+    scale_x_continuous(name=paste("Chr", chr_num)) +
+    scale_y_continuous(name=value) +
+    theme_cowplot()
+  
+  if ( chr_num == 5 ) {
+    chrom_zoom <- chrom_zoom + 
+      annotate(geom="segment", x=28228417, xend=28391246, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28307847, xend=28314166, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28381269, xend=28383405, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28385064, xend=28387610, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28396987, xend=28399447, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28412971, xend=28416134, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28438276, xend=28504691, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28493676, xend=28498165, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28521527, xend=28530635, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28505617, xend=28507890, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28508816, xend=28511211, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28511812, xend=28514550, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=28531249, xend=28535957, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5)
+    ## LOC121709120 - 28228417..28391246 (protocadherin gamma-A4-like)
+    ## LOC121709123 - 28307847..28314166 (protocadherin gamma-A4-like)
+    
+    ## LOC121710140 - 28381269..28383405 (protocadherin gamma-A4-like) 
+    ## LOC121708907 - 28385064..28387610 (protocadherin beta-15-like)
+    ## LOC121708908 - 28396987..28399447 (protocadherin beta-16-like)
+    ## LOC121709757 - 28412971..28416134 (protocadherin beta-16-like)
+    ## LOC121709523 - 28438276..28504691 (protocadherin alpha-C2-like)
+    ## LOC121709525 - 28521527..28530635 (protocadherin alpha-C2-like)
+    ## LOC121709759 - 28505617..28507890 (protocadherin alpha-12-like)
+    ## LOC121709528 - 28508816..28511211 (protocadherin alpha-2-like)
+    ## LOC121709524 - 28493676..28498165 (protocadherin alpha-2-like)
+    ## LOC121709526 - 28511812..28514550 (protocadherin alpha-1-like)
+    ## LOC121709521 - 28531249..28535957 (protocadherin-10)
+  } else {
+    chrom_zoom <- chrom_zoom +
+      annotate(geom="segment", x=8975000, xend=9010276, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9015269, xend=9017929, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9018098, xend=9020528, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9021142, xend=9192693, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9053052, xend=9058530, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9121609, xend=9124645, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9111286, xend=9114221, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9108509, xend=9110664, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9119038, xend=9121323, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9204710, xend=9401767, y=gene_top, yend=gene_top, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9207621, xend=9240325, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9227979, xend=9230859, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9247246, xend=9254167, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9258751, xend=9261663, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9261792, xend=9265960, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9320653, xend=9323736, y=gene_bot, yend=gene_bot, color="grey20", linewidth=0.5) +
+      annotate(geom="segment", x=9329782, xend=9335320, y=gene_mid, yend=gene_mid, color="grey20", linewidth=0.5) 
+    ## LOC121693912 8975000..9010276 (protocadherin alpha-C2-like)
+    ## LOC121693920 9015269..9017929 (protocadherin alpha-10-like)
+    ## LOC121693922 9018098..9020528 (protocadherin alpha-8-like)
+    ## LOC121693910 9021142..9192693 (protocadherin alpha-C2-like)
+    ## LOC121693917 9053052..9058530 (protocadherin alpha-7-like)
+    
+    ## LOC121693926 9121609..9124645 (protocadherin alpha-8-like)
+    ## LOC121693925 9111286..9114221 (protocadherin alpha-7-like)
+    ## LOC121694333 9108509..9110664 (protocadherin alpha-3-like)
+    ## LOC121694863 9119038..9121323 (protocadherin alpha-3-like)
+    ## pcdh2g28 9204710..9401767 (protocadherin 2 gamma 28)
+    ## LOC121693914 9207621..9240325 (protocadherin gamma-A2-like)
+    ## LOC121693918 9227979..9230859 (protocadherin beta-16-like)
+    ## LOC121693921 9247246..9254167 (protocadherin beta-15-like)
+    ## LOC121693923 9258751..9261663 (protocadherin gamma-A10-like)
+    ## LOC121693916 9261792..9265960 (protocadherin beta-15)
+    ## LOC121693915 9320653..9323736 (protocadherin gamma-A11-like)
+    ## LOC121693924 9329782..9335320 (protocadherin gamma-A11-like)
+  }
+  assign(paste0("chr", chr_num, "_zoom_b1"), chrom_zoom)
+  
+  
+  ## Upset plot of balanced SNPs
+  b1_bottom_zoom <- subset(b1_bottom, pos >= (region_start - 800000) & pos <= (region_end + 1000000))
+  b1_top_zoom <- subset(b1_top, pos >= (region_start - 800000) & pos <= (region_end + 1000000))
+  if ( chr_num == 5 ) {
+    b1_top_zoom <- subset(b1_top_zoom, pos >= 28200001 & pos <= 28450000)
+  } else {
+    b1_top_zoom <- subset(b1_top_zoom, pos >= 8930001 & pos <= 9410000)
+  }
+  
+  b1_top_zoom_wider <- pivot_wider(b1_top_zoom, id_cols="pos", names_from="lake", values_from=c("beta1", "zscore"))
+  for ( lake in c("bride", "amos", "long", "quon", "pat")) {
+    b1_top_zoom_wider[[lake]] <- if_else(is.na(b1_top_zoom_wider[[paste("beta1", lake, sep="_")]]), 0, 1)
+  }
+  assign(paste0("chr", chr_num, "_zoom_b1_wider"), b1_top_zoom_wider)
+  
+  size = get_size_mode('exclusive_intersection')
+  upset_order <- colnames(b1_top_zoom_wider)[c(16:12)]
+  upset_plot <- upset(b1_top_zoom_wider, upset_order,
+        base_annotations=list(
+            'Intersection size'=intersection_size(
+            text_mapping=aes(color="black", y=(!!size + 25))
+          ) +
+          ylab(paste0("SNPs with >=", top_value*100, "% Beta1: chr", chr_num)) +
+          ylim(0,650)
+        ),
+        intersections=list("bride", "amos", "long", "quon", "pat",
+                           c("bride", "amos"), c("bride", "long"), c("bride", "quon"), c("bride", "pat"),  
+                           c("amos", "long"), c("amos", "quon"), c("amos", "pat"),
+                           c("long", "quon"), c("long", "pat"), c("quon", "pat"),
+                           c("bride", "amos", "long"), c("bride", "amos", "quon"), c("bride", "amos", "pat"), c("bride", "long", "quon"),
+                           c("bride", "long", "pat"), c("bride", "quon", "pat"),
+                           c("amos", "long", "quon"), c("amos", "long", "pat"), c("amos", "quon", "pat"), c("long", "quon", "pat"),
+                           c("bride", "amos", "long", "quon"), c("bride", "amos", "long", "pat"), c("bride", "amos", "quon", "pat"), 
+                           c("bride", "long", "quon", "pat"),
+                           c("amos", "long", "quon", "pat"),
+                           c("bride", "amos", "long", "quon", "pat")),
+        queries=list(
+          upset_query(set='bride', fill=bride_col),
+          upset_query(set='amos', fill=amos_col),
+          upset_query(set='long', fill=long_col),
+          upset_query(set='pat', fill=pat_col),
+          upset_query(set='quon', fill=quon_col)),
+        themes=list('Intersection size'=list(theme_cowplot(), theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), strip.text.x = element_blank())), 
+                  'intersections_matrix'=list(theme_cowplot(), theme(axis.text.x=element_blank(), strip.text.x = element_blank(), axis.title=element_blank(), axis.ticks=element_blank(), axis.line=element_blank()))
+                  ),
+        name="population", keep_empty_groups=TRUE, width_ratio = 0.15, sort_sets=FALSE, sort_intersections=FALSE,
+    )
+  assign(paste("chr", chr_num, "top_balanced_upset", sep="_"), upset_plot)
+  assign(paste0("chr", chr_num, "top", top_value*100, "_bal_snps"), b1_top_zoom_wider)
+}
+chr5_b1
+chr5_zoom_b1
+chr20_b1
+chr20_zoom_b1
+
+zoom_plots <- plot_grid(chr5_zoom_b1, chr20_zoom_b1, nrow=2, align="v", axis="b")
+zoom_plots
+# ggsave(paste0("betascan/betascan_chr5_chr20_zoom_", value, ".pdf"), zoom_plots, width=6, height=8)
+ggsave(paste0(out_dir, "betascan_chr5_chr20_pi_dxy_zoom_", value, "_lineplot.pdf"), zoom_plots, width=6, height=6)
+
+
+## Upset plots
+chr_5_top_balanced_upset
+chr_20_top_balanced_upset
+
+zoom_upsets <- plot_grid(chr_5_top_balanced_upset, chr_20_top_balanced_upset, nrow=2, align="v", axis="b")
+zoom_upsets
+ggsave(paste0(out_dir, "betascan_chr5_chr20_pi_dxy_zoom_", value, "_upsets.pdf"), zoom_upsets, width=12, height=6)
+
+
+### Manhattan Plot of balancing selection
+for ( lake in all_lakes ) {
+  for ( chrom_name in chroms$chr[2:nrow(chroms)] ) {
+    tmp <- read.table(paste("./betascan/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1", lake, "maxMissing75_HWE1e-10", chrom_name, "w2400_m015_p20.betascores.txt", sep="_"), header=TRUE, sep="\t") %>%
+      rename_with(~c("pos", "b1")) %>%
+      mutate(lake = lake, 
+             chr_num = chroms$chr_num[which(chroms$chr == chrom_name)])
+    if ( chrom_name %like% "80" ) { tmp2 <- tmp 
+    } else { tmp2 <- rbind(tmp2, tmp) }
+  }
+  assign(paste(lake, "betascores", sep="_"), tmp2, pos=1)
+  rm(tmp, tmp2)
+}
+all_betascores <- rbind(bride_betascores, amos_betascores, long_betascores, pat_betascores, quon_betascores) %>%
+  mutate(lake = factor(lake, levels=all_lakes), 
+         chr_num = factor(chr_num, levels=seq(1, 24)))
+
+value_plot <- ggplot(all_betascores, aes(x=pos, y=b1, group=lake, col=lake)) +
+  geom_line(alpha=0.5) +
+  #geom_point(alpha=0.2) +
+  scale_color_manual(values = colors) +
+  facet_grid( ~ chr_num, scales = "free_x", switch = "x", space = "free_x") +
+  theme_minimal() +
+  xlab("Chromosome") +
+  scale_y_continuous(name="BetaScan") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.spacing = unit(0.05, "cm"),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        legend.position = "none",
+        axis.line.x = element_line(linewidth = 0.5, linetype = "solid", color = "black"))
+value_plot
+ggsave("betascan/betascan_full_genome_lineplot.pdf", value_plot, height=6, width=12)
+
+
+## Per-lake plots
+for (lake in all_lakes ) {
+  tmp <- get(paste(lake, "betascores", sep="_"), pos=1) %>%
+    mutate(outlier = ifelse(b1 >= quantile(b1, 0.99), 1, 0),
+           chr_num = factor(chr_num, levels=c(as.character(seq(1,24)))))
+  
+  nonsig_count <- 1
+  tmp_subset <- data.frame("pos"=0, "b1"=0, "lake"=0, "chr_num"=0, "outlier"=0)
+  for (row_num in 1:nrow(tmp)) {
+    if ( tmp$outlier[row_num] == 0 & nonsig_count%%10 == 0 ) {
+      tmp_subset <- rbind(tmp_subset, tmp[row_num,])
+      nonsig_count <- nonsig_count + 1
+    } else if ( nonsig_count%%10 != 0 ) { nonsig_count <- nonsig_count + 1 }
+  }
+  tmp_subset <- tmp_subset[-1,] %>%
+    mutate(chr_num = factor(chr_num, levels=c(as.character(seq(1,24)))))
+  
+  
+  ## Plotting
+  lake_col <- get(paste0(lake, "_col"))
+  tmp_plot <- ggplot(tmp) +
+    geom_point(aes(x=pos, y=b1, col=chr_num)) +
+    geom_hline(aes(yintercept=quantile(b1, 0.99), col=lake_col), linewidth=1) +
+    geom_point(data=subset(tmp, outlier %in% 1), aes(x=pos, y=b1, col=lake_col)) +
+    xlab("Chromosome") +
+    scale_y_continuous(name=lake, limits=c(0,830)) +
+    scale_color_manual(values=c(rep(c(chrom1, chrom2), 12), rep(lake_col, 2))) +
+    facet_grid( ~ chr_num, scales = "free_x", switch = "x", space = "free_x") +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+          panel.spacing = unit(0.05, "cm"),
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          strip.placement = "outside",
+          legend.position = "none",
+          axis.line.x = element_line(linewidth = 0.5, linetype = "solid", color = "black"))
+  
+  ## Remove the x-axis labels to condense the plots together
+  if (lake != "pat") { 
+    tmp_plot <<- tmp_plot + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), 
+          axis.ticks.x=element_blank(), strip.text.x = element_blank()) 
+  }
+  assign(x=paste(lake, "betascan_plot", sep="_"), value=tmp_plot, pos=1)
+}
+betascan_plotgrid <- plot_grid(bride_betascan_plot, NULL, amos_betascan_plot, NULL, long_betascan_plot, NULL, quon_betascan_plot, NULL, pat_betascan_plot, nrow=9, rel_heights=c(0.98,-0.3,0.98,-0.3,0.98,-0.3,0.98,-0.3,1), align="hv", axis="b")
+betascan_plotgrid
+ggsave(paste0("./betascan/betascan_full_genome_scatterplot_separate.pdf"), betascan_plotgrid, height=6, width=12)
+  
+
+#### Figure 4D & E - AF in Balancing Selection Regions ####
+for ( region in c("chr5_28200001-28450000", "chr20_8930001-9410000") ) {
+  af_df <- read.table(paste("./betascan/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10.recode", region, "alt_dmc_input.txt", sep="_"), header=FALSE) %>%
+    t(.) %>%
+    as.data.frame(.) %>%
+    rename_with(~c("amos", "bride", "long", "pat", "quon")) %>%
+    pivot_longer(cols=c("amos", "bride", "long", "pat", "quon"), names_to="lake", values_to="alt_af")
+  
+  if ( region %like% "chr20" ) {
+    ymax <- 1000
+  } else {
+    ymax <- 500
+  }
+  
+  bins <- c()
+  col_num <- 2
+  increment <- 0.02
+  for ( lake_file in all_lakes ) {
+    row_num <- 1
+    for (i in seq(0, 1, by = increment)) {
+      bins$bin[row_num] <- i
+      bins$count[row_num] <- nrow(subset(af_df, lake %in% lake_file & alt_af > (i - increment) & alt_af <= i))
+      row_num <- row_num + 1
+    }
+    bins <- data.frame(bins)
+    colnames(bins)[col_num] <- lake_file
+    col_num <- col_num + 1
+  }
+  bins_pivot <- pivot_longer(bins, cols=c("bride", "amos", "long", "quon", "pat"), names_to="lake", values_to="count") %>%
+    mutate(lake = factor(lake, levels=all_lakes))
+  
+  af_hist <- ggplot(bins_pivot, aes(x=bin, y=count, color=lake)) + 
+    geom_line() + 
+    scale_x_continuous(name=paste("Alternate AF:", region), limits=c(0,1)) + 
+    scale_y_continuous(name="Count", limits=c(0, ymax)) + 
+    scale_color_manual(values=colors) +
+    theme_cowplot() +
+    theme(legend.position = "none")
+  assign(paste(region, "af_hist", sep="_"), af_hist)
+}
+`chr5_28200001-28450000_af_hist`
+`chr20_8930001-9410000_af_hist`
+af_hist_grid <- plot_grid(`chr5_28200001-28450000_af_hist`, `chr20_8930001-9410000_af_hist`, nrow=2)
+ggsave(paste0(out_dir, "fst_pi_dxy_balancing_selection_regions_af_hists.pdf"), af_hist_grid, width=5, height=5)
+
+
+#### Figure S4B & D - AF Landlocked vs. Anadromous in Balancing Selection Regions ####
+for ( region in c("chr5_28200001-28450000", "chr20_8930001-9410000") ) {
+  
+  b1_top <- get(paste0("chr", str_split_i(str_split_i(region, "_", 1), "chr", 2), "_zoom_b1_wider")) %>%
+    select(c("pos", "amos", "bride", "long", "pat", "quon")) %>%
+    filter(bride != 1) %>%
+    mutate(total_outliers = rowSums(.[,c("amos", "long", "quon", "pat")])) %>%
+    filter(total_outliers != 1)
+  
+  af_df <- read.table(paste("./betascan/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10.recode", region, "alt_dmc_input.txt", sep="_"), header=FALSE) %>%
+    t(.) %>%
+    as.data.frame(.) %>%
+    rename_with(~c("amos", "bride", "long", "pat", "quon")) %>%
+    mutate(pos = read_rds(paste("./betascan/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10.recode", region, "snps_pos_absolute.rds", sep="_"))) %>%
+    merge(., b1_top, by="pos", suffixes=c("_af", "_b1"), all.y=TRUE) %>%
+    filter(pos >= str_split_i(str_split_i(region, "_", 2), "-", 1) & pos <= str_split_i(region, "-", 2)) %>%
+    rename_with(~c("pos", "amos", "bride", "long", "pat", "quon"), c("pos", "amos_af", "bride_af", "long_af", "pat_af", "quon_af")) %>%
+    pivot_longer(cols=c("amos", "bride", "long", "pat", "quon"), names_to="lake", values_to="alt_af") %>%
+    filter((amos_b1 == 1 & lake == "amos") | (long_b1 == 1 & lake == "long") | (quon_b1 == 1 & lake == "quon") | (pat_b1 == 1 & lake == "pat") | lake == "bride") %>%
+    mutate(lake = if_else(lake == "bride", "bride", "land"))
+  print(nrow(subset(af_df, lake != "bride")))
+  
+  
+  if ( region %like% "chr20" ) {
+    ymax <- 120
+  } else {
+    ymax <- 35
+  }
+  
+  bins <- c()
+  col_num <- 2
+  increment <- 0.01
+  for ( lake_file in c("bride", "land") ) {
+    row_num <- 1
+    for (i in seq(0, 1, by = increment)) {
+      bins$bin[row_num] <- i
+      bins$count[row_num] <- nrow(subset(af_df, lake %in% lake_file & alt_af > (i - increment) & alt_af <= i))
+      row_num <- row_num + 1
+    }
+    bins <- data.frame(bins)
+    colnames(bins)[col_num] <- lake_file
+    col_num <- col_num + 1
+  }
+  bins_pivot <- pivot_longer(bins, cols=c("bride", "land"), names_to="lake", values_to="count") %>%
+    mutate(lake = factor(lake, levels=c("bride", "land")))
+  
+  af_hist <- ggplot(bins_pivot, aes(x=bin, y=count, color=lake)) + 
+    geom_line() + 
+    scale_x_continuous(name=paste("Alternate AF:", region), limits=c(0,1)) + 
+    scale_y_continuous(name="Count", limits=c(0, ymax)) + 
+    scale_color_manual(values=c("#1855F2", "#74AB20")) +
+    theme_cowplot() +
+    theme(legend.position = "none")
+  assign(paste(region, "af_hist", sep="_"), af_hist)
+  print(sum(bins_pivot$count))
+}
+`chr5_28200001-28450000_af_hist`
+`chr20_8930001-9410000_af_hist`
+af_hist_grid <- plot_grid(`chr5_28200001-28450000_af_hist`, `chr20_8930001-9410000_af_hist`, nrow=2)
+ggsave(paste0(out_dir, "balancing_selection_regions_af_hists_bride_v_land.pdf"), af_hist_grid, width=5, height=10)
+
+```
+
+
+``` {r Figure 6 - Osmoregulatory Genes}
+## Creating the full american shad annotation file
+annotation_df <- read.delim("./GCF_018492685.1_fAloSap1.pri_genomic.gtf.gz", header = FALSE, sep = "\t", skip = 4,
+                            col.names=c("chr", "type", "type2", "start", "stop", "blank1", "strand", "blank2", "info")) %>%
+  filter(type %in% "Gnomon" & type2 %in% "gene") %>%
+  select(-c(blank1, blank2)) %>%
+  separate_wider_delim(info, delim="; ", too_few="align_start",
+                       names=c("gene_name1", NA, "GeneID", "gbkey", "gene_name2", "gene_biotype", NA, NA)) %>%
+  mutate(gene_name1 = unlist(strsplit(gene_name1, split="gene_id\ "))[c(seq(2,2*nrow(.), 2))], 
+         GeneID = unlist(strsplit(GeneID, split="db_xref GeneID:"))[c(seq(2,2*nrow(.), 2))], 
+         gbkey = unlist(strsplit(gbkey, split="gbkey\ "))[c(seq(2,2*nrow(.), 2))], 
+         gene_name2 = unlist(strsplit(gene_name2, split="gene\ "))[c(seq(2,2*nrow(.), 2))], 
+         gene_biotype = unlist(strsplit(gene_biotype, split="gene_biotype\ "))[c(seq(2,2*nrow(.), 2))],
+         length = stop - start) %>%
+  filter(gene_name1 %in% gene_name2) %>%
+  select(-c(gene_name1, gbkey, gene_biotype)) %>%
+  rename_with(~c("ID", "name"), c(GeneID, gene_name2)) %>%
+  mutate(index = row_number(.))
+
+## Make new osmo file with added gene names from the .gtf file
+gtf_osmo_genes <- read.table("./velotta22_osmoregulatory_genes_gtf.txt", header=FALSE) %>%
+  rename_with(~c("name", "category"), c(1, 2)) %>%
+  mutate(name = if_else(name %like% "LOC", name, tolower(name))) %>%
+  merge(., annotation_df, by="name") %>%
+  select(c("chr", "start", "stop", "length", "strand", "ID", "name", "category"))
+
+
+## Site-level FST for below
+data_list <- lapply(list.files(path="/Users/corcorri/Documents/Denver/Manuscript/popgen_stats/pixy_files/sitelevel/fst/", pattern="fst", full.names=TRUE),
+                    function(file) { read.table(file, header=TRUE, sep="\t", stringsAsFactors=FALSE) })
+fst_sitelevel <- do.call(rbind, data_list) %>%
+  pivot_wider(., id_cols=c("chromosome", "window_pos_1", "window_pos_2"), names_from=c("pop1", "pop2"), values_from="avg_wc_fst") %>%
+  rename_with(tolower) %>%
+  select(contains(c("chr", "window_pos_1", "bride")))
+
+for ( lake in l_lakes ) {
+  lake_fst <- cbind(fst_sitelevel[,1:2], fst_sitelevel[,grepl(lake, colnames(fst_sitelevel))]) %>%
+    rename_with(~c("chr", "pos", "fst")) %>%
+    filter(!is.na(fst)) %>%
+    mutate(fst = as.numeric(fst))
+  assign(x=paste(lake, "fst", sep="_"), value=lake_fst)
+  
+  ## Add columns for average fst within osmo genes
+  if (lake == "amos") { colnum <- 9 }
+  else if (lake == "long") { colnum <- 10 }
+  else if (lake == "quon") { colnum <- 11 }
+  else if (lake == "pat") { colnum <- 12 }
+  
+  all_gene_snps <- c()
+  
+  for (i in 1:nrow(gtf_osmo_genes)) {
+    ## Find the average FST per gene
+    gtf_osmo_genes[i, colnum] <- mean(subset(lake_fst, chr %in% gtf_osmo_genes$chr[i] & 
+                                               pos >= gtf_osmo_genes$start[i] & 
+                                               pos <= gtf_osmo_genes$stop[i])$fst, na.rm=TRUE)
+    
+    ## Made a dataframe of all SNPs within a gene
+    all_gene_snps <- rbind(all_gene_snps, subset(lake_fst, chr %in% gtf_osmo_genes$chr[i] & 
+                                                   pos >= gtf_osmo_genes$start[i] & 
+                                                   pos <= gtf_osmo_genes$stop[i]))
+  }
+  colnames(gtf_osmo_genes)[colnum] <- paste(lake, "fst", sep="_")
+  
+  all_gene_snps <- all_gene_snps[!duplicated(all_gene_snps[1:3]),]
+  assign(x=paste(lake, "all_osmo_snps", sep="_"), value=all_gene_snps)
+}
+rm(colnum, lake_fst, all_gene_snps)
+
+
+#### Calculating pairwise outliers: ####
+for (lake in l_lakes ) {
+  ## First must pull the site-level data of interest
+  ohana_selscan <- read.table(paste("./ohana/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_bride", lake,
+                                    "maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_MAF001_geno01_scan_lle-ratios.txt", sep="_"), header=TRUE, sep="\t")[,-1]
+  ohana_map <- read.table(paste("./ohana/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_bride", lake,
+                                "maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10_MAF001_geno01.map", sep="_"), header=FALSE, sep="\t")[,-c(2:3)]
+  ohana_pos <- cbind(ohana_selscan, ohana_map)[,c(6,7,1)] %>%
+    rename_with(~c("chr", "pos", "lle_ratio")) %>%
+    merge(., chroms, by="chr") %>%
+    mutate(SNP = paste('SNP',1:nrow(.), sep="_"),
+           chr_num <- as.factor(chr_num))
+  assign(paste(lake, "ohana_snps", sep="_"), ohana_pos, pos=1)
+  
+  ## Running through iterations to match outlier windows to osmo genes
+  iter_count <- 10000
+  ohana_quantile <- 0.99
+  ohana_quantile_name <- as.character((1-ohana_quantile)*100)
+  
+  # Pulling only the top 1% of SNPs per lake
+  top_snps <- subset(ohana_pos, lle_ratio >= quantile(ohana_pos$lle_ratio, ohana_quantile, na.rm = TRUE)) 
+  
+  # Calculate the expected # of outlier SNPs and observed number of outlier SNPs in the osmo genes
+  gtf_osmo_genes$exp <- gtf_osmo_genes$length / sum(chrom_length$len) * nrow(top_snps)
+  for ( i in 1:nrow(gtf_osmo_genes) ) {
+    gene_start <- gtf_osmo_genes$start[i]   # get gene position
+    gene_end <- gtf_osmo_genes$stop[i]       # get gene position
+    gene_chr <- gtf_osmo_genes$chr[i]       # get gene chromosome  
+    gtf_osmo_genes$obs[i] <- nrow(subset(top_snps, chr %in% gene_chr & pos > gene_start & pos < gene_end))
+    gtf_osmo_genes$total_snps[i] <- nrow(subset(ohana_pos, chr %in% gene_chr & pos > gene_start & pos < gene_end))
+    gtf_osmo_genes$mean_llr[i] <- mean(subset(ohana_pos, chr %in% gene_chr & pos > gene_start & pos < gene_end)$lle_ratio, na.rm=TRUE)
+    gtf_osmo_genes$cum_llr[i] <- sum(subset(ohana_pos, chr %in% gene_chr & pos > gene_start & pos < gene_end)$lle_ratio, na.rm=TRUE)
+  }
+  assign(x=paste(lake, "gtf_overlap", sep = "_"), 
+         value=gtf_osmo_genes %>%
+           mutate(fold_change = obs / exp, 
+                  lake = lake) %>%
+           select(c(1:8, "lake", "total_snps", "exp", "obs", "fold_change", "mean_llr", "cum_llr", 9:12)))
+  
+  
+  # Are there significantly different SNPs than expected in osmoregulatory genes (chi-square test)?
+  if ( sum(gtf_osmo_genes$obs) > 0 ) {
+    print(paste("ohana obs > exp:", lake))
+    print(chisq.test(x=gtf_osmo_genes$obs, p=(gtf_osmo_genes$exp / sum(gtf_osmo_genes$exp))))
+  }
+  # Same question, but with a 1-tail t-test (are there *more* observed SNPs than expected)
+  if ( sum(gtf_osmo_genes$obs) > 0 ) {
+    print(t.test(x=gtf_osmo_genes$obs, y=gtf_osmo_genes$exp, alternative="g", paired = TRUE))
+  }
+
+
+  ### Do the osmo genes contain more outlier SNPs than another random set of genes?
+  # 1) Calculate number of outlier SNPs within each gene through the whole annotation file
+  annotation_df$exp <- annotation_df$length / sum(chrom_length$len) * nrow(top_snps)
+
+  for ( i in 1:nrow(annotation_df) ) {
+    if ( i%%1000 == 0 ) { print(paste(lake, "Row", i, "out of", nrow(annotation_df))) }
+    annotation_df$obs[i] <- nrow(subset(top_snps, chr %in% annotation_df$chr[i] &
+                                          pos > annotation_df$start[i] & pos < annotation_df$stop[i]))
+    annotation_df$total_snps[i] <- nrow(subset(ohana_pos, chr %in% annotation_df$chr[i] &
+                                                 pos > annotation_df$start[i] & pos < annotation_df$stop[i]))
+
+    annotation_df$mean_llr[i] <- mean(subset(ohana_pos, chr %in% annotation_df$chr[i] &
+                                               pos > annotation_df$start[i] &
+                                               pos < annotation_df$stop[i])$lle_ratio, na.rm=TRUE)
+    annotation_df$cum_llr[i] <- sum(subset(ohana_pos, chr %in% annotation_df$chr[i] &
+                                             pos > annotation_df$start[i] &
+                                             pos < annotation_df$stop[i])$lle_ratio, na.rm=TRUE)
+  }
+  assign(x=paste(lake, "annotation_df", sep="_"), value=annotation_df)
+
+
+
+  ### Are there more osmo genes with outliers than expected from a random set of 76 genes?
+  # 1) Calculate number of SNPs within each gene through the whole annotation file
+  # [DONE ABOVE]
+
+  # 2) Sum up total number of SNPs in obs column for a random sample of 82 genes
+  # 3) Repeat X times to get a normal distribution of SNP counts within 82 genes
+  random_dist_gene <- lapply(1:iter_count, function(iter){
+    if ( iter %% 500 == 0 ) { print(paste("Iteration", iter, "of", iter_count, "for", lake)) }
+    rand_genes <- sample(1:nrow(annotation_df), nrow(gtf_osmo_genes), replace = FALSE)
+    rand_genes_annotation <- subset(annotation_df, index %in% rand_genes)
+
+    ## Various values of interest to return
+    total_genes_with <- nrow(subset(rand_genes_annotation, obs >= 1))
+
+    ## Calculate mean LLR from the SNPs (to avoid taking a mean of gene's mean LLR)
+    rand_genes_snps_df <- c()
+    for ( i in rand_genes ) {
+      rand_genes_snps_df <- rbind(rand_genes_snps_df, subset(ohana_pos, chr %in% annotation_df$chr[i] &
+                                                               pos >= annotation_df$start[i] &
+                                                               pos <= annotation_df$stop[i]))
+    }
+    rand_genes_snps_df <- unique(rand_genes_snps_df)
+    mean_llr <- mean(rand_genes_snps_df$lle_ratio, na.rm = TRUE)
+    return(c(total_genes_with, mean_llr))
+  })
+  random_dist_gene_df <- as.data.frame(do.call(rbind,random_dist_gene)) %>%
+    rename_with(~c("total_genes_with", "mean_llr"))
+  assign(x=paste(lake, "rand_gene_count", sep = "_"), value=random_dist_gene_df)
+
+  ## Take a subsample of the genes
+  assign(x=paste(lake, "rand_gene_subsample", sep = "_"), value=merge(random_dist_gene_df %>% mutate(index = row.names(.)),
+                                                                      data.frame("index"=sample(1:nrow(random_dist_gene_df), 1000, replace = FALSE)), by="index"))
+
+  ## Are genes in annotation_df with obs >= 1 enriched for GO terms?
+  assign(x=paste(lake, "go_with", sep="_"), value=gost(unique(subset(annotation_df, obs >= 1)$name),
+                                                       organism = "charengus",
+                                                       significant = FALSE,
+                                                       correction_method = "g_SCS",
+                                                       domain_scope = "custom", custom_bg = unique(annotation_df$name)))
+}
+View(subset(amos_gtf_overlap, obs >= 1))
+View(subset(long_gtf_overlap, obs >= 1))
+View(subset(pat_gtf_overlap, obs >= 1))
+View(subset(quon_gtf_overlap, obs >= 1))
+View(amos_go_with$result)
+View(long_go_with$result)
+View(pat_go_with$result)
+# significant p_value term_size query_size  intersection_size precision recall  term_id source  term_name effective_domain_size source_order  parents
+# TRUE  0.04971564  4 590 3 0.005084746 0.75000000  GO:0072176  GO:BP nephric duct development  16599 16973 c("GO:0035295", "GO:0072073")
+# TRUE  0.04971564  4 590 3 0.005084746 0.75000000  GO:0039022  GO:BP pronephric duct development 16599 9700  c("GO:0048793", "GO:0072176")
+View(quon_go_with$result)
+# significant p_value term_size query_size  intersection_size precision recall  term_id source  term_name effective_domain_size source_order  parents
+# TRUE  0.004024059 60  509 10  0.019646365 0.166666667 GO:0001525  GO:BP angiogenesis  16599 328 c("GO:0048514", "GO:0048646")
+# TRUE  0.008733188 79  509 11  0.021611002 0.139240506 GO:0048514  GO:BP blood vessel morphogenesis  16599 12632 c("GO:0001568", "GO:0035239")
+# TRUE  0.034639468 26  509 6 0.011787819 0.230769231 GO:0002040  GO:BP sprouting angiogenesis  16599 638 GO:0001525
+
+
+## Merge all osmo outlier info into the same dataframe to compare across lakes - osmo_rbind
+osmo_rbind <- rbind(amos_gtf_overlap, long_gtf_overlap, pat_gtf_overlap, quon_gtf_overlap) %>%
+  pivot_longer(., cols=c("amos_fst", "long_fst", "pat_fst", "quon_fst"), names_to=c("lake2", NA), names_sep="_", values_to="mean_fst") %>%
+  filter(lake == lake2) %>%
+  select(-c("lake2"))
+
+## Chi-square test for all osmoregulatory genes
+chisq.test(x=osmo_rbind$obs, p=(osmo_rbind$exp / sum(osmo_rbind$exp)))
+# X-squared = 855.98, df = 327, p-value < 2.2e-16
+t.test(x=osmo_rbind$obs, y=osmo_rbind$exp, alternative="g", paired = TRUE)
+# t = 2.2535, df = 327, p-value = 0.01244
+  
+  
+### PLOTTING HISTOGRAMS ###
+for ( lake_file in l_lakes ) local({
+  hist_df <- get(paste0(lake_file, "_rand_gene_count")) %>%
+    mutate(mean_llr = as.numeric(mean_llr))
+  hist_color <- get(paste0(lake_file, "_col"))
+  
+  print(paste(lake_file, "genes w/ obs >= 1:", range(hist_df$total_genes_with)[1], "-", range(hist_df$total_genes_with)[2]))
+  print(paste(lake_file, "mean LLR:", range(hist_df$mean_llr)[1], "-", range(hist_df$mean_llr)[2]))
+  print("")
+  
+  ## Genes with obs >= 1
+  lake_file <- lake_file
+  top_5_with <- quantile(hist_df$total_genes_with, 0.95)
+  histogram_with <<- ggplot(hist_df, aes(x=total_genes_with, color="hist_color", fill="hist_color")) +
+    geom_histogram(binwidth=1) +
+    annotate("segment", y=0, yend=3500, x=top_5_with, xend=top_5_with, color="red", linewidth=1) +
+    geom_point(data=data.frame(), aes(y=0, x=nrow(subset(osmo_rbind, lake == lake_file & obs >= 1)), color="arrow"), size=5, shape=6) +
+    scale_color_manual(values=c("hist_color"=hist_color, "red", "arrow"="black")) +
+    scale_fill_manual(values=c("hist_color"=hist_color)) +
+    scale_x_continuous(name="# Genes with Outlier SNPs (out of 82 genes)", limits=c(-1, 14)) +
+    scale_y_continuous(name=lake_file, limits=c(0,3500)) +
+    theme_cowplot() +
+    theme(legend.position = "none")
+  
+  ## Mean LLR
+  osmo_genes_snps_df <- c()
+  for ( i in 1:nrow(as.data.frame(gtf_osmo_genes)) ) {
+    osmo_genes_snps_df <- rbind(osmo_genes_snps_df, subset(get(paste(lake_file, "ohana_snps", sep="_")), chr %in% gtf_osmo_genes$chr[i] &
+                                                             pos >= gtf_osmo_genes$start[i] &
+                                                             pos <= gtf_osmo_genes$stop[i]))
+  }
+  osmo_genes_snps_df <- osmo_genes_snps_df[-1,]
+  
+  top_5_mean_llr <- quantile(hist_df$mean_llr, 0.95)
+  histogram_meanllr <<- ggplot(hist_df, aes(x=mean_llr, color="hist_color", fill="hist_color")) +
+    geom_histogram(binwidth=0.017) +
+    annotate("segment", y=0, yend=400, x=top_5_mean_llr, xend=top_5_mean_llr, color="red", linewidth=1) +
+    geom_point(data=data.frame(), aes(y=0, x=mean(osmo_genes_snps_df$lle_ratio, na.rm=TRUE), color="arrow"), size=5, shape=6) +
+    scale_color_manual(values=c("hist_color"=hist_color, "red", "arrow"="black")) +
+    scale_fill_manual(values=c("hist_color"=hist_color)) +
+    scale_x_continuous(name="Mean LLR across 82 Random Genes", limits=c(-0.017, 3.4)) +
+    scale_y_continuous(name=lake_file, limits=c(0,400)) +
+    theme_cowplot() +
+    theme(legend.position = "none")
+  
+  ## Remove the bottom axes for all graphs but Pat for vertical gridding
+  if (lake_file != "pat") {
+    histogram_with <<- histogram_with +
+      theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+    histogram_meanllr <<- histogram_meanllr +
+      theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+  }
+  
+  ## Save the histogram files
+  assign(x=paste(lake_file, "hist_meanllr", sep="_"), value=histogram_meanllr, pos=1)
+  assign(x=paste(lake_file, "hist_with", sep="_"), value=histogram_with, pos=1)
+})
+  
+## Plot the histograms as grids
+hist_overlay_with <- plot_grid(amos_hist_with, NULL, long_hist_with, NULL, quon_hist_with, NULL, pat_hist_with, 
+                               rel_heights=c(0.9, -0.3, 0.9, -0.3, 0.9, -0.3, 0.9), nrow=7, align="hv")
+hist_overlay_with
+
+hist_overlay_mean_llr <- plot_grid(amos_hist_meanllr, NULL, long_hist_meanllr, NULL, quon_hist_meanllr, NULL, pat_hist_meanllr,
+                                   rel_heights=c(0.9, -0.3, 0.9, -0.3, 0.9, -0.3, 0.9), nrow=7, align="hv")
+hist_overlay_mean_llr
+
+histogram_grid <- plot_grid(hist_overlay_with, hist_overlay_mean_llr, nrow=1)
+histogram_grid
+
+
+### Writing tables of the osmoregulatory gene overlaps 
+osmo_rbind <- osmo_rbind[with(osmo_rbind, order(name,lake)),] %>%
+  merge(., chroms, by="chr") %>%
+  relocate(all_of(colnames(.)[1:length(.)-1]), .after=chr_num)
+write.table(file=paste0("./ohana/pairwise_all_gtf_overlap_00", ohana_quantile_name, "_all_genes.txt"), x=osmo_rbind, row.names = FALSE, col.names = TRUE, sep="\t", quote=FALSE)
+
+
+
+#### Figure 6C - Osmoregulatory gene outlier UpSet plot ####
+library(ComplexUpset)
+
+osmo_outliers <- subset(osmo_rbind, obs >= 1) %>%
+  mutate(keep = 1) %>%
+  pivot_wider(., id_cols=c("chr_num", "chr", "start", "stop", "length", "strand", "ID", "name", "category"), names_from="lake", values_from=c("exp", "obs", "total_snps", "mean_llr", "cum_llr", "fold_change", "keep")) %>%
+  rename_with(~c("amos", "long", "pat", "quon"), c("keep_amos", "keep_long", "keep_pat", "keep_quon")) %>%
+  mutate(category = factor(category, levels=c("cotransporters", "pumps", "osmosensor", "junction", "regulatory", "hormones", "cortisol", "secondary")))
+osmo_outliers[,c(34:37)][is.na(osmo_outliers[,c(34:37)])] <- 0
+
+shared_genes <- subset(osmo_outliers, (long + quon + pat + amos) >= 2)$name
+
+size = get_size_mode('exclusive_intersection')
+upset_order <- colnames(osmo_outliers)[c(37,35,34,36)]
+window_upset <- upset(osmo_outliers, upset_order, 
+      base_annotations=list(
+        'Intersection size'=intersection_size(
+          text_mapping=aes(label=!!size,
+            color="black", y=(!!size + 0.75)),
+          mapping=aes(fill=category)
+        ) +
+        ylab("Candidate Osmoregulatory Gene Outliers") +
+        ylim(0,10) +
+        annotate("text", label=shared_genes[3], x=5, y=0.5, size=4, color="black") + 
+        annotate("text", label=shared_genes[4], x=6, y=0.5, size=4, color="black") + 
+        annotate("text", label=shared_genes[2], x=8, y=0.5, size=4, color="black") +
+        annotate("text", label=shared_genes[1], x=8, y=1.5, size=4, color="black") + 
+          scale_fill_discrete(name="Functional Group")
+      ),
+      intersections=list("amos", "long", "quon", "pat",
+                         c("amos", "long"), c("amos", "quon"), c("amos", "pat"),
+                         c("long", "quon"), c("long", "pat"), c("quon", "pat"),
+                         c("amos", "long", "quon"), c("amos", "long", "pat"), c("amos", "quon", "pat"), c("long", "quon", "pat"),
+                         c("amos", "long", "quon", "pat")
+      ),
+      matrix=(
+        intersection_matrix(
+          outline_color=list(active="#909190", inactive="#EBEBEB"),
+          geom=geom_point(size=3))
+      ),
+      queries=list(
+        upset_query(set='amos', fill=amos_col),
+        upset_query(set='long', fill=long_col),
+        upset_query(set='pat', fill=pat_col),
+        upset_query(set='quon', fill=quon_col),
+        upset_query(intersect=c('amos'), fill='#C0BEBE', color='#C0BEBE', only_components=c('intersections_matrix')),
+        upset_query(intersect=c('long'), fill='#C0BEBE', color='#C0BEBE', only_components=c('intersections_matrix')),
+        upset_query(intersect=c('quon'), fill='#C0BEBE', color='#C0BEBE', only_components=c('intersections_matrix')),
+        upset_query(intersect=c('pat'), fill='#C0BEBE', color='#C0BEBE', only_components=c('intersections_matrix')),
+        upset_query(intersect=c('amos', 'long'), fill='#909190', color='#909190',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('amos', 'quon'), fill='#909190', color='#909190',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('amos', 'pat'), fill='#909190', color='#909190',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('long', 'quon'), fill='#909190', color='#909190',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('long', 'pat'), fill='#909190', color='#909190',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('quon', 'pat'), fill='#909190', color='#909190',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('amos', 'long', 'quon'), fill='#5C5D5E', color='#5C5D5E',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('amos', 'long', 'pat'), fill='#5C5D5E', color='#5C5D5E',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('amos', 'quon', 'pat'), fill='#5C5D5E', color='#5C5D5E',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('long', 'quon', 'pat'), fill='#5C5D5E', color='#5C5D5E',
+                    only_components=c('intersections_matrix')),
+        upset_query(intersect=c('amos', 'long', 'quon', 'pat'), fill='#272928',  color='#272928',
+                    only_components=c('intersections_matrix'))
+      ),
+      set_sizes=(
+        upset_set_size() + theme_cowplot() + theme(axis.title.y=element_blank(), axis.text.y=element_blank(), strip.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+      ),
+      themes=list('Intersection size'=list(theme_cowplot(), theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), strip.text.x = element_blank())), 
+                  'intersections_matrix'=list(theme_cowplot(), theme(axis.text.x=element_blank(), strip.text.x = element_blank(), axis.title=element_blank(), axis.ticks=element_blank(), axis.line=element_blank()))
+                  ),
+      name=NULL, keep_empty_groups=TRUE, width_ratio = 0.15, stripes=c('#F5F5F5', 'white'), sort_sets=FALSE, sort_intersections=FALSE
+)
+window_upset
+
+
+## Combine all three plots and save it
+fig5_grid <- plot_grid(histogram_grid, window_upset, nrow=2, rel_heights=c(1, 0.75))
+fig5_grid
+ggsave(paste0(out_dir, "filtering_redone_pairwise_osmo_outliers_00", ohana_quantile_name, "_histograms_complexUpset_at_least_one.pdf"), fig5_grid, width=12, height=10)
+```
+
+
+``` {r Figure S5 - Protocadherin RNAseq} 
+#### featureCounts
+protocadherin_genes_chr5 <- c("LOC121709124", "LOC121709120", "LOC121709123", "LOC121710140", "LOC121708907", "LOC121708908", "LOC121709757", "LOC121709523") #, ## within dxy/pi outlier windows
+protocadherin_genes_chr20 <- c("si:ch73-233f7.1", "LOC121693912", "LOC121693929", "LOC121693920", "LOC121693922", "LOC121693910", "LOC121693917", "LOC121693930", "LOC121694333", "LOC121693925", "LOC121694863", "LOC121693926", "pcdh2g28", "LOC121693927", "LOC121693914", "LOC121693918", "LOC121693921", "LOC121693923", "LOC121693916", "LOC121693928", "LOC121693915", "LOC121693924", "LOC121693932") ## within dxy/pi outlier windows
+# tissue_list <- c("SRR14511793", "SRR14511794", "SRR14511795", "SRR14511796", "SRR14511797") ## IDs
+tissue_list <- c("ovary", "testis", "muscle", "liver", "brain")                             ## Names
+
+## Load in the featureCounts results
+fc <- read.table("./rnaseq/all_tissues_featureCounts_fastp.txt", skip=1, header=TRUE, sep="\t") %>%
+  rename_with(~tissue_list, 7:11)
+
+for ( tissue in tissue_list ) {
+  tissue_col <- paste(tissue, "CPM", sep="_")
+  library_size <- sum(fc[[tissue]])
+  fc[[tissue_col]] <- as.numeric(fc[[tissue]] / (library_size / 1e6))
+  
+  ## Histogram of counts per tissue
+  bin <- c()
+  row_num <- 1
+  increment <- 40
+  for (i in seq(0, 1000, by = increment)) {
+    bin$bin[row_num] <- i
+    bin$count[row_num] <- nrow(fc[ fc[[tissue_col]] > (i - increment) & fc[[tissue_col]] <= i, ])
+    row_num <- row_num + 1
+  }
+  bin <- data.frame(bin)
+  colnames(bin)[2] <- tissue
+  assign(paste(tissue, "bin", sep="_"), bin)
+}
+colnames(fc)[7:11] <- paste(tissue_list, "counts", sep="_")
+
+## Plotting the bins histogram
+for ( chr in c(5, 20)) {
+  fc_protocadherins <- fc[0,0]
+  protocadherins_gene_list <- get(paste0("protocadherin_genes_chr", chr))
+  for ( gene in 1:length(protocadherins_gene_list)) {
+    fc_tmp <- subset(fc, Geneid %like% protocadherins_gene_list[gene])
+    fc_protocadherins <- rbind(fc_protocadherins, fc_tmp)
+  }
+  rm(fc_tmp)
+  
+  fc_protocadherins_pivot <- pivot_longer(fc_protocadherins, cols=c(7:16), names_to=c("tissue", ".value"), names_sep="_")
+  
+  ## Any difference in tissues across all protocadherins in the region?
+  print(summary(aov(lm(CPM ~ tissue, fc_protocadherins_pivot))))
+  ## No significant difference
+  # 5a          Df Sum Sq Mean Sq F value Pr(>F)
+  # tissue       4   1284   320.9    0.51  0.729
+  # Residuals   35  22037   629.6
+  # 20a         Df Sum Sq Mean Sq F value Pr(>F)
+  # tissue        4   2033   508.4   1.138  0.342
+  # Residuals   110  49120   446.5 
+  
+  ## Any difference when considering only "highly" expressed genes?
+  fc_protocadherin_aov <- aov(lm(CPM ~ tissue, subset(fc_protocadherins_pivot, CPM >= 1)))
+  print(summary(fc_protocadherin_aov))
+  ## No significant difference in chr5, minorly significanty in chr20
+  # 5a          Df Sum Sq Mean Sq F value Pr(>F)
+  # tissue       4   3046   761.4   0.478  0.752
+  # Residuals    8  12757  1594.6  
+  # 20a         Df Sum Sq Mean Sq F value Pr(>F)  
+  # tissue       4  14839    3710   3.535 0.0256 *
+  # Residuals   19  19939    1049 
+  
+  print(TukeyHSD(fc_protocadherin_aov))
+  # 5a                  diff        lwr       upr     p adj
+  # liver-brain     5.632094 -120.3032 131.56734 0.9998413
+  # muscle-brain  -28.978342 -154.9136  96.95691 0.9250293
+  # ovary-brain   -37.075699 -163.0109  88.85955 0.8409883
+  # testis-brain  -21.402885 -126.7679  83.96210 0.9503936
+  # muscle-liver  -34.610436 -172.5656 103.34472 0.9013523
+  # ovary-liver   -42.707793 -180.6629  95.24736 0.8169564
+  # testis-liver  -27.034979 -146.5076  92.43769 0.9289930
+  # ovary-muscle   -8.097357 -146.0525 129.85780 0.9995347
+  # testis-muscle   7.575457 -111.8972 127.04812 0.9993693
+  # testis-ovary   15.672814 -103.7999 135.14548 0.9896162
+  # 20a                 diff        lwr       upr     p adj
+  # liver-brain    14.879158  -59.52457 89.282883 0.9731598
+  # muscle-brain  -48.285400 -122.68913 26.118326 0.3257146
+  # ovary-brain   -52.207553 -136.57345 32.158342 0.3703071
+  # testis-brain  -46.543674 -102.78760  9.700256 0.1351403
+  # muscle-liver  -63.164557 -142.70549 16.376371 0.1615139
+  # ovary-liver   -67.086710 -156.01617 21.842751 0.1981560
+  # testis-liver  -61.422832 -124.30546  1.459794 0.0575086
+  # ovary-muscle   -3.922153  -92.85161 85.007308 0.9999233
+  # testis-muscle   1.741726  -61.14090 64.624351 0.9999880
+  # testis-ovary    5.663879  -68.73985 80.067604 0.9993323
+  
+  ## Sum expression from each region of genes per tissue
+  tissue_fc_bar_stack <- ggplot(fc_protocadherins_pivot, aes(x=tissue, y=CPM, color=Geneid, fill=Geneid)) + 
+    geom_col(position="stack") + 
+    scale_y_continuous(name="Counts per Million (CPM)", limits=c(0,275)) +
+    scale_x_discrete(name="Tissue") +
+    theme_cowplot()
+  tissue_fc_bar_stack
+  
+  ## Alternatively - bar chart not stacked
+  tissue_fc_bar_dodge <- ggplot(fc_protocadherins_pivot, aes(x=Geneid, y=CPM, color=tissue, fill=tissue)) + 
+    geom_col(position="dodge") +
+    scale_y_continuous(name="Counts per Million (CPM)", limits=c(0,130)) +
+    scale_x_discrete(name=paste(chr, "Protocadherins")) +
+    theme_cowplot() +
+    theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1))
+  tissue_fc_bar_dodge
+  
+  assign(paste0("fc_protocadherins_pivot_chr", chr), fc_protocadherins_pivot)
+  assign(paste0("fc_protocadherins_plots_chr", chr), plot_grid(tissue_fc_bar_stack, tissue_fc_bar_dodge, nrow=1, rel_widths=c(0.75,1)))
+}
+fc_protocadherins_plots_chr5
+fc_protocadherins_plots_chr20
+
+fc_protocadherins_plotgrid <- plot_grid(fc_protocadherins_plots_chr5, fc_protocadherins_plots_chr20, nrow=2, align="h", axis="b")
+fc_protocadherins_plotgrid
+ggsave(paste0(out_dir, "fc_protocadherins_by_region_tissue.pdf"), fc_protocadherins_plotgrid, width=20, height=10)
+
+
+## All protocadherin genes:
+fc_protocadherins_pivot <- rbind(fc_protocadherins_pivot_chr5, fc_protocadherins_pivot_chr20)
+summary(aov(lm(CPM ~ tissue, fc_protocadherins_pivot)))
+## No significant difference in the average count between tissues when considering all protocadherins
+#              Df Sum Sq Mean Sq F value Pr(>F)
+# tissue        4   3229   807.1   1.691  0.155
+# Residuals   150  71578   477.2
+
+fc_protocadherin_aov <- aov(lm(CPM ~ tissue, subset(fc_protocadherins_pivot, CPM >= 1)))
+summary(fc_protocadherin_aov)
+## Yes significant difference in the average count between tissues when only considering "highly" expressed genes
+#             Df Sum Sq Mean Sq F value Pr(>F)  
+# tissue       4  16414    4103   3.843 0.0116 *
+# Residuals   32  34166    1068 
+TukeyHSD(fc_protocadherin_aov)
+#                     diff        lwr       upr     p adj
+# liver-brain    11.638750  -43.64357 66.921070 0.9727458
+# muscle-brain  -40.104159  -95.38648 15.178162 0.2465009
+# ovary-brain   -45.787670 -104.96386 13.388519 0.1927987
+# testis-brain  -37.393367  -80.17768  5.390947 0.1100467
+# muscle-liver  -51.742909 -111.45464  7.968822 0.1149827
+# ovary-liver   -57.426420 -120.76027  5.907435 0.0904077
+# testis-liver  -49.032117  -97.40415 -0.660086 0.0456821 *
+# ovary-muscle   -5.683511  -69.01737 57.650344 0.9989495
+# testis-muscle   2.710792  -45.66124 51.082823 0.9998368
+# testis-ovary    8.394303  -44.38391 61.172516 0.9903774
+
+```
+
+
+``` {r Figure S6 - imiss vs. idepth}
+## Missingness vs. Depth scatterplot
+miss_depth_ggplot <- merge(read.table("./filtercheck_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_maxMissing75_HWE1e-10.imiss", header=TRUE, sep="\t"), 
+                           read.table("./filtercheck_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_maxMissing75_HWE1e-10.idepth", header=TRUE, sep="\t"),
+                           by="INDV") %>%
+  mutate(lake = factor(tolower(gsub("([a-zA-Z]+)_[0-9]+", "\\1", INDV)), levels=all_lakes)) %>%
+  ggplot(aes(x=F_MISS, y=MEAN_DEPTH, color=lake, fill=lake, label=INDV)) + 
+    geom_point() + 
+    geom_text(hjust=-0.1, vjust=-0.5, size=3) +
+    scale_x_continuous(limits=c(0,1), name="Fraction Missing") +
+    scale_y_continuous(limits=c(0,20), name="Mean Depth") +
+    scale_color_manual(values=colors) + 
+    scale_fill_manual(values=colors) +
+    theme_cowplot() +
+    theme(legend.position = "none")
+
+
+## Ancestry PCA
+library(pcadapt)
+
+allsites_newfilters <- read.pcadapt("./pcadapt/all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_maxMissing75_HWE1e-10.recode.bed", type="bed")
+allsites_pcadapt <- pcadapt(allsites_newfilters, K=4, min.maf=0.01)
+  
+# With integers - Necessary if you want to be able to label your individuals/populations
+poplist.names <- c(rep("Amos", 21), rep("Bride", 30), rep("Long", 20), rep("Pat", 19), rep("Quon", 20))
+indiv_list <- c("Amos_10", "Amos_11", "Amos_12", "Amos_13", "Amos_16", "Amos_17", "Amos_18", "Amos_19", "Amos_20", "Amos_22", "Amos_23", "Amos_25", "Amos_26", "Amos_28", "Amos_3", "Amos_4", "Amos_5", "Amos_6", "Amos_7", "Amos_8", "Amos_9",
+                  "Bride_1", "Bride_10", "Bride_11", "Bride_12", "Bride_13", "Bride_14", "Bride_15", "Bride_16", "Bride_17", "Bride_18", "Bride_19", "Bride_2", "Bride_20", "Bride_21", "Bride_22", "Bride_23", "Bride_24", "Bride_25", "Bride_26", "Bride_27", "Bride_28", "Bride_29", "Bride_3", "Bride_30", "Bride_4", "Bride_5", "Bride_6", "Bride_7", "Bride_8", "Bride_9",
+                  "Long_11", "Long_12", "Long_14", "Long_15", "Long_16", "Long_18", "Long_19", "Long_2",  "Long_20", "Long_22", "Long_23", "Long_25", "Long_26", "Long_27", "Long_28", "Long_3", "Long_30", "Long_7", "Long_8", "Long_9",
+                  "Pat_1", "Pat_10", "Pat_11", "Pat_12", "Pat_13", "Pat_14", "Pat_15", "Pat_16", "Pat_17", "Pat_18", "Pat_19", "Pat_2", "Pat_3", "Pat_4", "Pat_5", "Pat_6", "Pat_7", "Pat_8", "Pat_9",
+                  "Quon_1", "Quon_10", "Quon_12", "Quon_13", "Quon_17", "Quon_18", "Quon_19", "Quon_2", "Quon_20", "Quon_21", "Quon_25", "Quon_26", "Quon_27", "Quon_28", "Quon_3", "Quon_4", "Quon_5", "Quon_6", "Quon_8", "Quon_9")
+  
+allsites_pcadapt_scores <- cbind(as.data.frame.matrix(allsites_pcadapt$scores), poplist.names, indiv_list) %>%
+  rename_with(~c("pc1", "pc2", "pc3", "pc4", "lake", "indiv")) %>%
+  mutate(lake = factor(lake, levels=c("Bride", "Amos", "Long", "Quon", "Pat")))
+  
+## Plotting the PCA
+allsites_ggplot_12 <- ggplot(allsites_pcadapt_scores, aes(x=pc1, y=pc2, color=lake, fill=lake, label=indiv)) +
+  geom_hline(aes(yintercept=0), col="black") +
+  geom_vline(aes(xintercept=0), col="black") +
+  geom_point(size=2.2) +
+  geom_text(hjust=-0.1, vjust=-0.5, size=2) +
+  scale_color_manual(values=colors) +
+  scale_fill_manual(values=colors) +
+  scale_x_continuous(name=paste0("PC1 (", round(allsites_pcadapt$singular.values[1]^2*100, digits=2), "%)"), 
+                     limits=c(min(allsites_pcadapt_scores$pc1)-0.05, max(allsites_pcadapt_scores$pc1)+0.05)) + 
+  scale_y_continuous(name=paste0("PC2 (", round(allsites_pcadapt$singular.values[2]^2*100, digits=2), "%)"), 
+                     limits=c(min(allsites_pcadapt_scores$pc2)-0.05, max(allsites_pcadapt_scores$pc2)+0.05)) +  
+  theme_cowplot() + 
+  theme(legend.text=element_text(size=15), legend.title=element_text(size=20), axis.text=element_text(size=10), axis.title=element_text(size=15))
+ggplotly(allsites_ggplot_12)
+
+imissidepth_pca <- plot_grid(miss_depth_ggplot, allsites_ggplot_12, nrow=1, rel_widths=c(1, 1.5))
+ggsave(paste0(out_dir, "allsites_gatkrecHardF_snps_maxMeanDP16_softF_maxMissing75_HWE1e-10_ggplot_imiss_idepth_pcas.pdf"), imissidepth_pca, width=10, height=6)
+```
+
+
+``` {r Table S5 - SLiM and Ohana}
+parameters_list <- c("bot_10x_s0.005", "bot_10x_s0.05", "bot_10x_s0.5", 
+                     "bot_100x_s0.005", "bot_100x_s0.05", "bot_100x_s0.5", 
+                     "bot_1000x_s0.005", "bot_1000x_s0.05", "bot_1000x_s0.5")
+
+## Calculate # of shared outliers per parameter combination
+shared_outliers <- data.frame(cbind("V1" = c(4,3,2), matrix(ncol=9, nrow=3))) %>% 
+  rename_with(~c("total_outliers", parameters_list))
+
+for ( parameters in parameters_list ) {
+  for ( pop in c(1, 2, 3, 4) ) {
+    ## Load in all of the repetitions, and mark outliers & the repetition ir came from for merging across populations
+    for ( rep in seq(1:20) ) {
+      if ( rep == 1 ) {
+        ohana_selscan <- read.table(paste0("./slim/ohana/neutral_vcf_pop", pop, "_", parameters, "_rep", rep, "_maxMissing75_MAF001_geno01_subsample_selscan_50kb_10kb.txt"), 
+                                    header=TRUE, sep="\t")[,-c(1,9)] %>%
+          mutate(outlier = ifelse(mean_lle_ratio >=  quantile(mean_lle_ratio, 0.99), 1, 0), 
+                 rep = rep)
+      } else {
+        ohana_selscan <- rbind(ohana_selscan, 
+                               read.table(paste0("./slim/ohana/neutral_vcf_pop", pop, "_", parameters, "_rep", rep, "_maxMissing75_MAF001_geno01_subsample_selscan_50kb_10kb.txt"),
+                                          header=TRUE, sep="\t")[,-c(1,9)] %>%
+                                 mutate(outlier = ifelse(mean_lle_ratio >=  quantile(mean_lle_ratio, 0.99), 1, 0), 
+                                        rep = rep))
+      }
+    }
+    assign(paste0("pop", pop, "_selscan"), ohana_selscan)
+  }
+  all_ohana_selscan <- merge(pop1_selscan, pop2_selscan, by=c("window_pos_1", "window_pos_2", "rep"), all=TRUE, suffixes=c("_pop1", "_pop2")) %>%
+    merge(., pop3_selscan, by=c("window_pos_1", "window_pos_2", "rep"), all=TRUE) %>%
+    merge(., pop4_selscan, by=c("window_pos_1", "window_pos_2", "rep"), all=TRUE, suffixes=c("_pop3", "_pop4")) %>%
+    rowwise(.) %>%
+    mutate(total_outliers = rowSums(.[c("outlier_pop1", "outlier_pop2", "outlier_pop3", "outlier_pop4")]))
+
+  ## Count shared outliers
+  shared_outliers[[parameters]][1] <- nrow(subset(all_ohana_selscan, total_outliers == 4))
+  shared_outliers[[parameters]][2] <- nrow(subset(all_ohana_selscan, total_outliers == 3))
+  shared_outliers[[parameters]][3] <- nrow(subset(all_ohana_selscan, total_outliers == 2))
+}
+shared_outliers_circle <- pivot_longer(shared_outliers, cols=colnames(shared_outliers)[2:length(shared_outliers)], names_to="parameter", values_to="count") %>%
+  mutate(outliers_sel = paste(total_outliers, str_split_i(parameter, "s", 2), sep="_"),
+         bot_str = paste0(str_split_i(str_split_i(parameter, "_", 2), "x", 1), "x"), 
+         count = as.numeric(count)) %>%
+  select(-c("total_outliers", "parameter")) %>%
+  pivot_wider(., id_cols="outliers_sel", names_from="bot_str", values_from="count") %>%
+  as.data.frame(.)
+write.table(shared_outliers_circle, paste0(out_dir, "slim_subsample_10Mb_shared_outliers.txt"), col.names=TRUE, row.names=FALSE, quote=FALSE, sep="\t")
+
+```
