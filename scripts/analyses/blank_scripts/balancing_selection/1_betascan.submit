@@ -1,0 +1,71 @@
+#!/bin/bash
+#SBATCH --job-name=betascan      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=10G
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=1_betascan_subset.out    # Standard output log
+#SBATCH --error=1_betascan_subset.err     # Standard error log
+
+date
+
+
+## Load modules below
+module load python/3.11.11-gcc-11.5.0-linux-rocky9-x86_64-l36w3q7
+module load vcftools/0.1.16-gcc-11.5.0-linux-rocky9-x86_64-7djyuxr
+module load htslib/1.21-gcc-11.5.0-linux-rocky9-x86_64-bzf5hjb
+
+## Execute commands for application below
+fai="REFERENCE.fai"
+out_dir="DATA_DIR/balancing_selection"
+
+for lake in bride amos long pat quon; do
+   in_dir="VCF_INDIV_DIR"
+   prefix="VCF_IN_BASE"
+   suffix="VCF_IN_SUFFIX"
+
+   for chrom in NC_055961.1 NC_055976.1; do
+      if [ ${chrom} == "NC_055961.1" ]; then
+         bp_start=$((28200001-800000))
+         bp_end=$((28400000+1000000))
+      elif  [ ${chrom} == "NC_055976.1" ]; then
+         bp_start=$((8950001-800000))
+         bp_end=$((9400000+1000000))
+      fi
+      out_file="${out_dir}/${prefix}_${lake}${suffix}_${chrom}_subset"
+
+      ## Filter to only the regions around those suspected of balancing selection
+      vcftools --gzvcf ${in_dir}${prefix}_${lake}${suffix}.recode.vcf.gz \
+               --chr ${chrom} \
+               --from-bp ${bp_start} \
+               --to-bp ${bp_end} \
+               --recode \
+               --out ${out_file}
+
+      grep -P "\t\*\t" -v ${out_file}.recode.vcf > ${out_file}_mod.recode.vcf
+
+      source ./../moments/moments-env/bin/activate
+
+      ## Run glactools for formatting
+      cd glactools
+      export PATH=`pwd`:$PATH
+
+      BIN_DIR/glactools vcfm2acf --onlyGT --fai ${fai} ${out_file}_mod.recode.vcf > ${out_file}.AFRsubset.acf.gz
+      BIN_DIR/glactools acf2betascan --fold ${out_file}.AFRsubset.acf.gz | gzip > ${out_file}.AFRsubset.beta.txt.gz
+
+      ## Run BetaScan
+      cd ../
+      python BetaScan.py -i ${out_file}.AFRsubset.beta.txt.gz -fold -p 20 -m 0.15 -w 2400 -o ${out_file}_w2400_m015_p20.betascores.txt
+      ## -p 20 -o ${prefix}${lake}${suffix}_${chrom}_p20.betascores.txt
+      ## -m 0.15 -o ${prefix}${lake}${suffix}_${chrom}_m015.betascores.txt
+      ## -w 2400 -o ${prefix}${lake}${suffix}_${chrom}_w2400.betascores.txt
+
+      deactivate
+   done
+done
+
+date

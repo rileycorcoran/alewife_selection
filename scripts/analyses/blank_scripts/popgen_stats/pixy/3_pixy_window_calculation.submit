@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --job-name=pi_windows
+#SBATCH -p bigmem
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=riley.corcoran@du.edu
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=80G
+## #SBATCH --exclude=node[001,002,012,013]
+#SBATCH --array=1-24
+#SBATCH -t 14-00:00
+#SBATCH --output=2_pixy_window_calculation_%a.out
+#SBATCH --error=2_pixy_window_calculation_%a.err
+
+date
+
+## Load modules below
+module load r/4.5.1-gcc-11.5.0-linux-rocky9-x86_64-26rwooq
+
+cd /data/nsm/velottalab/riley/analyses/popgen_stats/pixy/ashad_replaced
+
+## Calculate the 50kb sliding 10kb windowed values for fst, pi, and dxy, one chromosome per array for speed
+for test in fst pi dxy; do
+   Rscript pixy_windowed_analysis.R ${test} $SLURM_ARRAY_TASK_ID
+done
+
+date

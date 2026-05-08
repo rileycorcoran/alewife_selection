@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH --job-name=raw_fastqc      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL            # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH -t 1-00:00
+#SBATCH --mem=20G                  # a single CPU
+#SBATCH --cpus-per-task=4
+#SBATCH --output=0_fastqc_raw.out    # Standard output log
+#SBATCH --error=0_fastqc_raw.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/fastqc/0.11.9
+module load compilers/anaconda-2021.11
+
+
+## Run fastQC on the raw files
+in_dir="/data/nsm/velottalab/public_res/rnaseq/fish/ashad_2021/fastq/"
+out_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/fastqc/raw/"
+
+fastqc -t 2 -o ${out_dir} ${in_dir}*.fastq.gz
+
+
+## Compile the results into a MultiQC report
+eval "$(conda shell.bash hook)"
+conda activate multiqc-env
+
+multiqc ${out_dir} -o ${out_dir}
+
+date
+

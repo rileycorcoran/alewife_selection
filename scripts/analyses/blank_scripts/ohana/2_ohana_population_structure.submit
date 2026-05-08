@@ -1,0 +1,48 @@
+#!/bin/bash
+#SBATCH --job-name=ohana_pop_structure       # Job name
+#SBATCH -p bigmem
+#SBATCH --mail-type=ALL                # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                     # a single CPU
+#SBATCH --cpus-per-task=8
+#SBATCH -t 12-00:00
+#SBATCH --mem=100G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=2_ohana_population_structure.out    # Standard output log
+#SBATCH --error=2_ohana_population_structure.err     # Standard error log
+
+date
+
+## Load modules below
+module load anaconda/2025.06
+module load r/4.5.1-gcc-11.5.0-linux-rocky9-x86_64-26rwooq
+
+eval "$(conda shell.bash hook)"
+conda activate ohana-env
+
+
+## Set up variables
+out_dir="OHANA_OUT_DIR/pop_structure"
+out="all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10"
+out_thin="${out_dir}/${out}_MAF001_LD50kb_geno01_new"
+
+## Convert to the Ohana input format
+convert ped2dgm ${out_thin}.ped ${out_thin}_qpas_input.dgm
+
+
+## Testing for best K ##
+MI="30"
+mkdir -p ${out_dir}
+for K in 2 3 4 5 6; do
+   for run in {1..20}; do
+      qpas ${out_thin}_qpas_input.dgm -k ${K} -qo ${out_thin}_${K}_admixture_infer_${run}.matrix -fo ${out_thin}_${K}_af_infer_${run}.matrix -mi ${MI}
+      nemeco ${out_thin}_qpas_input.dgm ${out_thin}_${K}_af_infer_${run}.matrix -co ${out_thin}_${K}_${run}_co_tree.matrix -mi ${MI}
+      convert cov2nwk ${out_thin}_${K}_${run}_co_tree.matrix ${out_thin}_${K}_${run}_co_tree.nwk
+   done
+done
+
+## Pull the final log-likelihood values from every repetition of each K (should be 30 x 5 = 150 values) and graph the results
+grep -P "^30" 2_ohana_population_structure.out > ${out_dir}/ohana_pop_structure_lls.txt
+Rscript SCRIPTS_DIR/ohana/pop_structure/ohana_best_run_all5.R ${out_dir}
+
+date

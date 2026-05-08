@@ -1,0 +1,84 @@
+#!/bin/bash
+#SBATCH --job-name=fish_ohana       # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL                # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                     # a single CPU
+#SBATCH --cpus-per-task=1
+#SBATCH -t 12-00:00
+#SBATCH --mem=80G
+#SBATCH --output=2_ohana_selection_study_fish.out    # Standard output log
+#SBATCH --error=2_ohana_selection_study_fish.err     # Standard error log
+
+
+## Conversion and submission script ###
+## for lake in amos long pat quon; do sed "s/fish/${lake}/g" ohana_selection_study.submit > ohana_selection_study_${lake}.submit; sbatch ohana_selection_study_${lake}.submit; done
+
+
+date
+
+## Load modules below
+module load anaconda/2025.06
+module load r/4.5.1-gcc-11.5.0-linux-rocky9-x86_64-26rwooq
+
+eval "$(conda shell.bash hook)"
+conda activate ohana-env
+
+
+## Set up variables
+out_dir="OHANA_OUT_DIR"
+structure_out_dir="OHANA_OUT_DIR/pop_structure"
+out="all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_bride_fish_maxMeanDP16_softF_rmA28Q17Q1_maxMissing75_HWE1e-10"
+out_full="${out}_MAF001_geno01"
+out_thin="${out}_MAF001_LD50kb_geno01_new"
+
+
+## First, convert to the Ohana input format
+convert ped2dgm ${out_full}.ped ${out_full}_qpas_input.dgm
+convert ped2dgm ${out_thin}.ped ${out_thin}_qpas_input.dgm
+
+## Set maximum number of iterations for the log-likelihood tests
+MI="30"
+
+## Testing for best K ##
+for K in 2 3 4; do
+   for run in {1..20}; do
+      ## Empty the .out file since that is where the admixture info gets saved
+      > 2_ohana_selection_study_fish.out
+
+      ## Run the admixture analysis
+      qpas ${out_thin}_qpas_input.dgm -k ${K} \
+         -qo ${structure_out_dir}/${out_thin}_${K}_admixture_infer_${run}.matrix \
+         -fo ${structure_out_dir}/${out_thin}_K${K}_af_infer_${run}.matrix -mi ${MI}
+
+      ## Move the output to a specific file
+      cp 2_ohana_selection_study_fish.out ${structure_out_dir}/ohana_fish_admixture_infer_K${K}_${run}.out
+
+      ## Empty the .out file again
+      > 2_ohana_selection_study_fish.out
+   done
+   ## Determine the highest log-likelihood repetition
+   Rscript SCRIPTS_DIR/ohana/pop_structure/ohana_best_run_pair.R ${structure_out_dir}/${out_full} ${K}
+
+   ## Copy the results from the R script to the .err file so it doesn't get deleted
+   cat 2_ohana_selection_study_fish.out >> 2_ohana_selection_study_fish.err
+done
+
+
+### Selection study - Full-genome data set subsetted to ~50Kb unlinked markers
+K="2"
+out_full="${out_dir}/${out_full}"
+out_thin="${out_dir}/${out_thin}"
+
+## First with the LD-thinned:
+qpas ${out_thin}_qpas_input.dgm -k ${K} -qo ${out_thin}_admixture_infer.matrix -fo ${out_thin}_af_infer.matrix -mi ${MI}
+nemeco ${out_thin}_qpas_input.dgm ${out_thin}_af_infer.matrix -mi ${MI} -co ${out_thin}_cout.matrix
+
+## Then compare to full file:
+qpas ${out_full}_qpas_input.dgm -k ${K} -qi ${out_thin}_admixture_infer.matrix -fo ${out_full}_af_infer.matrix -mi ${MI} -fq
+selscan ${out_full}_qpas_input.dgm ${out_full}_af_infer.matrix ${out_thin}_cout.matrix > ${out_full}_scan_lle-ratios.txt
+
+## Running the R code to make the windowed averages:
+Rscript SCRIPTS_DIR/ohana/ohana_windows_50kb.R ${out} fish ${out_dir}
+
+date

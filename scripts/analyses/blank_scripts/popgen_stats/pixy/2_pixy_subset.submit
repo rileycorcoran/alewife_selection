@@ -1,0 +1,82 @@
+#!/bin/bash
+#SBATCH --job-name=pixy_subset
+#SBATCH -p defq
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=riley.corcoran@du.edu
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=80G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --array=1-3
+#SBATCH -t 14-00:00
+#SBATCH --output=2_pixy_subset_%a.out
+#SBATCH --error=2_pixy_subset_%a.err
+
+date
+
+## Load modules below
+module load r/4.5.1-gcc-11.5.0-linux-rocky9-x86_64-26rwooq
+
+## Run each site-level stat in a separate array
+if [ $SLURM_ARRAY_TASK_ID == 1 ]; then test="fst"
+elif [ $SLURM_ARRAY_TASK_ID == 2 ]; then test="pi"
+elif [ $SLURM_ARRAY_TASK_ID == 3 ]; then test="dxy"
+fi
+
+mkdir -p ./sitelevel/${test}/na_rm
+mv chr*${test}.txt ./sitelevel/${test}/
+## Remove any rows with NAs for fst/pi/dxy before combining them to decrease the size of the files
+for file in $( ls ./sitelevel/${test}/chr*txt | sed -e "s/.txt//g" -e "s#./sitelevel/${test}/##g" | sort -u ); do
+   echo "Subsetting ${file}"
+   file_out="./sitelevel/${test}/subset/${file}_subset.txt"
+
+   if [ ${test} == "pi" ]; then
+      awk -F'\t' '$5 != "NA"' ./sitelevel/${test}/${file}.txt > ${file_out}
+   else
+      awk -F'\t' '$6 != "NA"' ./sitelevel/${test}/${file}.txt > ${file_out}
+   fi
+done
+
+## Combine all of the chromosome-specific files together
+cd ./sitelevel/${test}/subset
+#for chr in $(seq 1 24); do
+#   i="1"
+#   head -n 1 chr1_1-1000000_${test}_subset.txt > all_${test}_rbind_chr${chr}_1.txt
+#   for file in $(ls chr${chr}_*.txt); do
+#      echo ${file}
+#      sed '1d' ${file} > tmp.txt
+#      cat all_${test}_rbind_chr${chr}_${i}.txt tmp.txt > all_${test}_rbind_chr${chr}_$((i+1)).txt
+#      rm all_${test}_rbind_chr${chr}_${i}.txt
+#      i=$((i + 1))
+#   done
+#   rm tmp.txt
+#done
+
+for chr in $(seq 1 24); do
+   i=$(ls all_${test}_rbind_chr${chr}_*[0-9]*.txt | grep -Po "_\\d+" | grep -Po "\\d+")
+   for file in $(ls chr${chr}_*.txt); do
+      echo ${file}
+      sed '1d' ${file} > tmp.txt
+      cat all_${test}_rbind_chr${chr}_${i}.txt tmp.txt > all_${test}_rbind_chr${chr}_$((i+1)).txt
+      rm all_${test}_rbind_chr${chr}_${i}.txt
+      i=$((i + 1))
+   done
+   rm tmp.txt
+done
+
+
+## Rbind all chromosome-specific files together (if wanted)
+#i="1"
+#head -n 1 chr1_1-1000000_${test}_subset.txt > all_${test}_rbind_1.txt
+#for file in $(ls all_${test}_rbind_chr${chr}_*.txt); do
+#   echo ${file}
+#   sed '1d' ${file} > tmp.txt
+#   cat all_${test}_rbind_${i}.txt tmp.txt > all_${test}_rbind_$((i+1)).txt
+#   rm all_${test}_rbind_${i}.txt
+#   i=$((i + 1))
+#   rm tmp.txt
+#done
+#mv all_${test}_rbind_${i}.txt all_${test}_rbind.txt
+#gzip all_${test}_rbind.txt
+
+date

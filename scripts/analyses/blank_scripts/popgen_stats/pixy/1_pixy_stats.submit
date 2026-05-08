@@ -1,0 +1,44 @@
+#!/bin/bash
+#SBATCH --job-name=pixy
+#SBATCH -p defq
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=riley.corcoran@du.edu
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=20G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH -t 14-00:00
+#SBATCH --output=1_pixy_stats.out
+#SBATCH --error=1_pixy_stats.err
+
+date
+
+## Load modules below
+module load compilers/anaconda-2021.11
+module load tools/htslib/1.13
+
+eval "$(conda shell.bash hook)"
+conda activate pixy-env
+
+
+## Calculate per-SNP pi, dXY, and FST for each population
+in_file="FINAL_VCF"
+out_dir="POPGEN_DIR/pixy"
+in_dir="VCF_IN_DIR/by_chromosomes"
+if [ ! -f ${out_dir} ]; then mkdir ${out_dir}; done
+
+cat SCRIPTS_DIR/chromosomes_scaffolds.tsv | while read CHR; do
+   pixy --stats pi fst dxy \
+	--vcf ${in_dir}/${in_file}_${CHR}.recode.vcf.gz \
+	--populations SCRIPTS_DIR/ashad_n107_tab.lab \
+        --output_folder ${out_dir} \
+	--window_size 1 \
+	--n_cores 16 \
+	--chromosomes ${CHR}
+
+   mv ${out_dir}/pixy_dxy.txt ${out_dir}/pixy_dxy_sitelevel_${CHR}.txt
+   mv ${out_dir}/pixy_pi.txt ${out_dir}/pixy_pi_sitelevel_${CHR}.txt
+   mv ${out_dir}/pixy_fst.txt ${out_dir}/pixy_fst_sitelevel_${CHR}.txt
+done
+
+date

@@ -1,0 +1,201 @@
+#!/bin/bash
+#SBATCH --job-name=form_pixy      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=40G
+#SBATCH -t 6-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=0_pixy_formatting.out    # Standard output log
+#SBATCH --error=0_pixy_formatting.err     # Standard error log
+
+date
+
+
+## Load modules below
+module load tools/vcftools/0.1.17
+module load tools/samtools/1.17
+module load tools/htslib/1.13
+module load tools/bcftools/1.10.2
+module load tools/gatk/4.2.5.0
+
+
+## Set up variables
+reference="REFERENCE"
+in_dir="GENOTYPEGVCF_DIR"
+in_file="GVCF_IN"
+out_final="FILTERING_OUT"
+out_pixy="${in_file}_pixy"
+out_dir="BY_CHROM_DIR"
+if [ ! -d ${out_dir} ]; then mkdir ${out_dir}; fi
+
+## Execute commands for application below
+## The first steps (removing individuals and hard-filtering) are the same as in 7_3_general_formatting.submit except that all sites are kept regardless of loci type (SNP, indel, invariant, etc.)
+
+### Starting with Hard Filtering ###
+echo "Beginning to add hard-filters: $(date)"
+if [ ! -f ${in_file}_filters.vcf.gz ]; then
+   gatk VariantFiltration \
+       -R ${reference} \
+       -V ${in_dir}/${in_file}.vcf.gz \
+       -filter "QD < 2.0" --filter-name "QD2" \
+       -filter "FS > 60.0" --filter-name "FS60" \
+       -filter "MQ < 40.0" --filter-name "MQ40" \
+       -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
+       -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" \
+       -O ${out_dir}/${in_file}_filters.vcf.gz \
+       --tmp-dir TMP_DIR \
+       --verbosity ERROR
+else
+   echo "Hard filters file already made"
+fi
+
+
+### Removing the hard-filtered sites ###
+out_step=$(echo ${out_final} | awk -F_ '{print $1}')
+out_hardF="${out_dir}/${out_pixy}_${out_step}"
+
+if [ ! -f ${out_hardF}.vcf.gz ]; then
+   echo "Removing hard-filtered sites: $(date)"
+   gatk SelectVariants \
+        -R ${reference} \
+        -V ${out_dir}/${in_file}_filters.vcf.gz \
+        --exclude-filtered \
+        -O ${out_hardF}.vcf.gz \
+        --tmp-dir TMP_DIR
+else
+   echo "Hard-filtered allsites file already exists"
+fi
+
+## Removing the flagged file after using it because it is massive (~140Gb)
+## if [ -e ${in_file}_filters.vcf.gz ]; then rm ${in_file}_filters.vcf.gz; fi
+## if [ -e ${in_file}_filters.vcf.gz.tbi ]; then rm ${in_file}_filters.vcf.gz.tbi; fi
+
+echo "Finished hard-filtering"
+
+
+
+### Quality Filtering for Pixy ###
+## Here I'm taking the most common vcftools filters at their lower frequent thresholds:
+##      - Base / SNP / Genotyping quality / QUAL > 20
+##      - minimum DP (at least 5 reads total at a loci) > 5
+##      - minimum % of individuals missing at a loci 75% (equal to 81 individuals)
+##      - biallelic SNPs only
+##      - Also removing the two worst depth/missingness individuals
+##      - Maximum mean depth - 2*meanDP
+## Pixy-specific:
+##  	- Minimum mean depth - arbitrary 4
+## 	- Filter separately for an invariant (set maximum MAF to 0) and variant (set mac to 1) sites
+
+
+## Looping over the quality, rm'ing, and loci filtering to repeat for variant and invariant files
+for type in variant invariant; do
+   if [ ${type} == "variant" ]; then
+      qual_args="--minGQ 20 --minDP 5 --min-alleles 2 --max-alleles 2 --exclude-positions filtercheck/hardfiltered_hdplot_h06_d7_snps.txt"
+      loci_args="--mac 1"
+   elif [ ${type} == "invariant" ]; then
+      qual_args=""
+      loci_args="--max-maf 0"
+   fi
+
+
+   ### Make a variant sites only file:
+   out_step=$(echo ${out_final} | awk -v OFS="_" -F_ '{print $2, $3}')
+   out_QF="${out_hardF}_${out_step}"
+
+   vcftools --gzvcf ${out_hardF}.vcf.gz \
+   	   --out ${out_QF}_${type} \
+           --min-meanDP 4 \
+           --max-meanDP 16 \
+	   ${qual_args} \
+           --recode
+
+   ## Making an index for running further GATK programs
+   bgzip -c ${out_QF}_${type}.recode.vcf > ${out_QF}_${type}.recode.vcf.gz
+   rm ${out_QF}_${type}.recode.vcf
+   gatk IndexFeatureFile -I ${out_QF}_${type}.recode.vcf.gz --tmp-dir ./../gatk_tmp
+
+
+   ## Remove A28 and Q17 and Q1
+   out_step=$(echo ${out_final} | awk -F_ '{print $4}')
+   out_rmIndv="${out_QF}_${out_step}"
+
+   gatk SelectVariants \
+        -R ${reference} \
+        -V ${out_QF}_${type}.recode.vcf.gz \
+        --exclude-sample-name Amos_28 \
+        --exclude-sample-name Quon_17 \
+        --exclude-sample-name Quon_1 \
+        -O ${out_rmIndv}_${type}.recode.vcf.gz \
+        --tmp-dir TMP_DIR
+   rm ${out_QF}_${type}.recode.vcf.gz*
+
+
+   ## Apply loci-specific soft-filters
+   out_step=$(echo ${out_final} | awk -v OFS="_" -F_ '{print $5, $6}')
+   out_miss="${out_rmIndv}_${out_step}"
+
+   vcftools --gzvcf ${out_rmIndv}_${type}.recode.vcf.gz \
+           --out ${out_miss}_${type} \
+           --max-missing 0.75 \
+           --hwe 1e-10 \
+           ${loci_args} \
+           --recode
+   rm ${out_rmIndv}_${type}.recode.vcf.gz
+   bgzip -c ${out_miss}_${type}.recode.vcf > ${out_miss}_${type}.recode.vcf.gz
+   rm ${out_miss}_${type}.recode.vcf
+   rm ${out_miss}_${type}.recode.vcf.tbi
+
+   ## Index resulting files
+   gatk IndexFeatureFile -I ${out_miss}_${type}.recode.vcf.gz --tmp-dir TMP_DIR
+
+   echo "Finished filtering ${type} sites file"
+done
+
+
+## Concatonate the files together
+bcftools concat --allow-overlaps \
+	${out_miss}_variant.recode.vcf.gz ${out_miss}_invariant.recode.vcf.gz \
+	-O z -o ${out_miss}.recode.vcf.gz
+
+## Remove intermediate files
+rm ${out_miss}_variant.recode.vcf.gz*
+rm ${out_miss}_invariant.recode.vcf.gz*
+rm ${out_hardF}.vcf.gz*
+
+echo "Finished concatenating files"
+
+
+### Making Separate Chromosomal vcfs for Pixy ###
+## 1) Separates by chromosome and outputs a gzipped file
+## 2) Indexes the .vcf.gz files
+## 3) Once the loop is on the last scaffold, concatonate all scaffolds together, remove the individual scaffold files, and index the concatonated scaffold file
+
+cat SCRIPTS_DIR/chromosomes.tsv | while read CHR; do
+
+   echo "Working on ${CHR}"
+
+   vcftools --gzvcf ${out_miss}.recode.vcf.gz \
+	    --out ${out_miss}_${CHR} \
+	    --chr ${CHR} \
+            --recode-INFO-all \
+	    --recode
+
+   bgzip ${out_miss}_${CHR}.recode.vcf
+   tabix ${out_miss}_${CHR}.recode.vcf.gz
+
+   if [ ${CHR} == "NW_024582164.1" ]; then
+      bcftools concat --threads 2 -O z ${out_miss}_NW*.vcf.gz > ${out_miss}_scaffolds.recode.vcf.gz
+      rm ${out_miss}_NW*.recode.vcf.gz*
+      tabix ${out_miss}_scaffolds.recode.vcf.gz
+   fi
+done
+
+## Removing pixy-specific intermediaries
+rm ${out_miss}.recode.vcf*
+
+echo "Completed pixy-formatted files: ${out_miss}_[CHR].vcf.gz"
+
+date

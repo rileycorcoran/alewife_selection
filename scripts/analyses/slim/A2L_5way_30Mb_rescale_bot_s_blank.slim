@@ -1,0 +1,220 @@
+function (float)estimateNe_Heterozygosity(o<Subpopulation>$ subpop,
+	[No<Chromosome>$ chromosome = NULL])
+{
+	if (isNULL(chromosome))
+	{
+		if (size(sim.chromosomes) == 1)
+			chromosome = sim.chromosomes;
+		else
+			stop("ERROR: in a multi-chrom model, a chromosome must be supplied.");
+	}
+	haplosomes = subpop.haplosomesForChromosomes(chromosome, includeNulls=F);
+	pi = calcHeterozygosity(haplosomes);
+	return pi / (4 * MU);
+}
+function (integer)tabulateFecundity(o<Subpopulation>$ subpop, i$ previous_N)
+{
+	parentIDs = subpop.individuals.pedigreeParentIDs;
+	rescaledParentIDs = parentIDs - min(parentIDs);
+	return tabulate(rescaledParentIDs, previous_N - 1);
+}
+function (float)estimateNe_Inbreeding(o<Subpopulation>$ subpop)
+{
+	previous_N = subpop.getValue("previous_N");
+	k = tabulateFecundity(subpop, previous_N);
+	return (previous_N * mean(k) - 2) / (mean(k) - 1 + var(k) / mean(k));
+}
+
+
+// set up a simple neutral simulation
+initialize() {
+	initializeSLiMOptions(keepPedigrees=T);
+	
+	// Rescaling parameter
+	defineConstant("downsample_frac", 5);
+	
+	// Selection and bottleneck variables
+	defineConstant("sel_s", SEL_S); // Selection coefficient
+	defineConstant("bot_str", BOT_STR); // Bottleneck strength
+	
+	// Defining some constant global parameters
+	defineConstant("MU", 2e-9 * downsample_frac); // Feng et al. 2017
+	defineConstant("L", 10000000); // 903564947 (whole genome size)
+	defineConstant("R", 2.54e-8 * downsample_frac); // Pettersson et al. 2019
+	defineConstant("out0", 30); // # individuals to output for Bride
+	defineConstant("out1", 20); // # individuals to output for landlocked pop
+	defineConstant("out2", 20); // # individuals to output for landlocked pop
+	defineConstant("out3", 20); // # individuals to output for landlocked pop
+	defineConstant("out4", 20); // # individuals to output for landlocked pop
+        defineConstant("NANC_total", 100000);
+	defineConstant("NANC", asInteger(NANC_total / downsample_frac));
+	
+
+	// Pop1
+	defineConstant("NPOP1", asInteger(50000 / downsample_frac)); 
+	defineConstant("NBOT1", asInteger(NANC_total / bot_str / downsample_frac)); 
+	defineConstant("TBOT1", asInteger(150 / downsample_frac));
+	defineConstant("TENDBOT1", asInteger(130 / downsample_frac)); 
+	
+	// Pop2
+	defineConstant("NPOP2", asInteger(50000 / downsample_frac));
+	defineConstant("NBOT2", asInteger(NANC_total / bot_str / downsample_frac)); 
+	defineConstant("TBOT2", asInteger(120 / downsample_frac));
+	defineConstant("TENDBOT2", asInteger(100 / downsample_frac)); 
+	
+        // Pop3
+        defineConstant("NPOP3", asInteger(50000 / downsample_frac));
+        defineConstant("NBOT3", asInteger(NANC_total / bot_str / downsample_frac));
+        defineConstant("TBOT3", asInteger(90 / downsample_frac)); 
+        defineConstant("TENDBOT3", asInteger(70 / downsample_frac)); 
+
+        // Pop4
+        defineConstant("NPOP4", asInteger(50000 / downsample_frac));
+        defineConstant("NBOT4", asInteger(NANC_total / bot_str / downsample_frac)); 
+        defineConstant("TBOT4", asInteger(60 / downsample_frac)); 
+        defineConstant("TENDBOT4", asInteger(40 / downsample_frac));
+	
+	defineConstant("endTime", NANC*10+TBOT1); // Burn in as 10x starting population size is suggested by the manual
+	
+	// Define constants that rely on ones set above
+	defineConstant("TBOTforward1", endTime-TBOT1);
+	defineConstant("TENDBOTforward1", endTime-TENDBOT1);
+	defineConstant("TBOTforward2", endTime-TBOT2);
+	defineConstant("TENDBOTforward2", endTime-TENDBOT2);
+	defineConstant("TBOTforward3", endTime-TBOT3);
+        defineConstant("TENDBOTforward3", endTime-TENDBOT3);
+        defineConstant("TBOTforward4", endTime-TBOT4);
+        defineConstant("TENDBOTforward4", endTime-TENDBOT4);
+	
+	// m1 mutation type: neutral
+	initializeMutationRate(MU);
+	initializeMutationType("m1", 0.5, "f", 0.0);
+	initializeMutationType("m2", 0.5, "e", sel_s); // Positive selection with an "e"xponential distribution of `s` with a mean of 0.1; "often used to model beneficial mutations"
+	// m1.convertToSubstitution = F;
+	
+	// g1 genomic element type: uses m1 for all mutations
+	// initializeGenomicElementType("g1", c(m1), c(1));
+	initializeGenomicElementType("g1", c(m1, m2), c(500, 1)); // Neutral is 500x more frequent than beneficial
+	
+	// uniform chromosome of length L bp with uniform recombination
+	initializeGenomicElement(g1, 0, L-1);
+	initializeRecombinationRate(R);
+}
+
+1 early() /* start p0 (anadromous) */ {
+	sim.addSubpop("p0", NANC);
+}
+// Set the beneficial mutation to a fitness effect of 0 in the anadromous population - no selection, just neutral mutations
+mutationEffect(m2, p0) { return 1.0; }
+
+// Print tick updates to see how the simulation is progessing
+seq(1000, endTime, by=1000) late() {
+	print("Finished tick " + community.tick);
+}
+
+TBOTforward1 early() /* split p1 (landlocked) from p0 (anadromous) */ {
+	// sim.outputFull();
+	
+	sim.addSubpopSplit("p1", NBOT1, p0);
+	p1.setValue("previous_N", p1.individualCount);
+	
+	log1 = community.createLogFile("OUT_DIR/sim_log_pop1_OUT_SUFFIX.txt", sep="\t", logInterval=1);
+	log1.addCycle();
+	log1.addCustomColumn("FST", "calcFST(p0.haplosomes, p1.haplosomes);");
+	log1.addCustomColumn("N(t)", "p1.individualCount;");
+	log1.addCustomColumn("Ne_heterozygosity", "estimateNe_Heterozygosity(p1);");
+	log1.addCustomColumn("Ne_inbreeding", "estimateNe_Inbreeding(p1);");
+	
+	// Setting migration rates
+	//p0.setMigrationRates(p1, 0.0000001);  // L2A
+	//p1.setMigrationRates(p0, 0.00002);  // A2L
+}
+
+TBOTforward2 early() /* split p1 (landlocked) from p0 (anadromous) */ {
+	sim.addSubpopSplit("p2", NBOT2, p0);
+	p2.setValue("previous_N", p2.individualCount);
+	
+	log2 = community.createLogFile("OUT_DIR/sim_log_pop2_OUT_SUFFIX.txt", sep="\t", logInterval=1);
+	log2.addCycle();
+	log2.addCustomColumn("FST", "calcFST(p0.haplosomes, p2.haplosomes);");
+	log2.addCustomColumn("N(t)", "p2.individualCount;");
+	log2.addCustomColumn("Ne_heterozygosity", "estimateNe_Heterozygosity(p2);");
+	log2.addCustomColumn("Ne_inbreeding", "estimateNe_Inbreeding(p2);");
+	
+	// Setting migration rates
+	//p0.setMigrationRates(p2, 0.0000001);  // L2A
+	//p2.setMigrationRates(p0, 0.00002);  // A2L
+}
+
+TBOTforward3 early() /* split p3 (landlocked) from p0 (anadromous) */ {
+        // sim.outputFull();
+        
+        sim.addSubpopSplit("p3", NBOT3, p0);
+        p3.setValue("previous_N", p3.individualCount);
+        
+        log3 = community.createLogFile("OUT_DIR/sim_log_pop3_OUT_SUFFIX.txt", sep="\t", logInterval=1);
+        log3.addCycle();
+        log3.addCustomColumn("FST", "calcFST(p0.haplosomes, p3.haplosomes);");
+        log3.addCustomColumn("N(t)", "p3.individualCount;");
+        log3.addCustomColumn("Ne_heterozygosity", "estimateNe_Heterozygosity(p3);");
+        log3.addCustomColumn("Ne_inbreeding", "estimateNe_Inbreeding(p3);");
+        
+        // Setting migration rates
+        //p0.setMigrationRates(p3, 0.0000001);  // L2A
+        //p3.setMigrationRates(p0, 0.00002);  // A2L
+}
+
+TBOTforward4 early() /* split p4 (landlocked) from p0 (anadromous) */ {
+        // sim.outputFull();
+        
+        sim.addSubpopSplit("p4", NBOT4, p0);
+        p4.setValue("previous_N", p4.individualCount);
+        
+        log4 = community.createLogFile("OUT_DIR/sim_log_pop4_OUT_SUFFIX.txt", sep="\t", logInterval=1);
+        log4.addCycle();
+        log4.addCustomColumn("FST", "calcFST(p0.haplosomes, p4.haplosomes);");
+        log4.addCustomColumn("N(t)", "p4.individualCount;");
+        log4.addCustomColumn("Ne_heterozygosity", "estimateNe_Heterozygosity(p4);");
+        log4.addCustomColumn("Ne_inbreeding", "estimateNe_Inbreeding(p4);");
+        
+        // Setting migration rates
+        //p0.setMigrationRates(p4, 0.0000001);  // L2A
+        //p4.setMigrationRates(p0, 0.00002);  // A2L
+}
+
+TENDBOTforward1:endTime early() /* exponential growth for p1 (landlocked) */ {
+	growthRate1 = asFloat(log(NPOP1/NBOT1)/(TENDBOT1) + 1);
+	newSize1 = asInteger(round(growthRate1^(sim.cycle - TENDBOTforward1) * NBOT1));
+	p1.setSubpopulationSize(newSize1);
+}
+
+TENDBOTforward2:endTime early() /* exponential growth for p2 (landlocked) */ {
+	growthRate2 = asFloat(log(NPOP2/NBOT2)/(TENDBOT2) + 1);
+	newSize2 = asInteger(round(growthRate2^(sim.cycle - TENDBOTforward2) * NBOT2));
+	p2.setSubpopulationSize(newSize2);
+}
+
+TENDBOTforward3:endTime early() /* exponential growth for p3 (landlocked) */ {
+        growthRate3 = asFloat(log(NPOP3/NBOT3)/(TENDBOT3) + 1);
+        newSize3 = asInteger(round(growthRate3^(sim.cycle - TENDBOTforward3) * NBOT3));
+        p3.setSubpopulationSize(newSize3);
+}
+
+TENDBOTforward4:endTime early() /* exponential growth for p4 (landlocked) */ {
+        growthRate4 = asFloat(log(NPOP4/NBOT4)/(TENDBOT4) + 1);
+        newSize4 = asInteger(round(growthRate4^(sim.cycle - TENDBOTforward4) * NBOT4));
+        p4.setSubpopulationSize(newSize4);
+}
+
+// Output the pairwise .vcf files at the end with sample sizes mimicking ming
+endTime late() {
+	sampleNANC = sample(p0.individuals, out0).haplosomes;
+	sampleNPOP1 = sample(p1.individuals, out1).haplosomes;
+	sampleNPOP2 = sample(p2.individuals, out2).haplosomes;
+        sampleNPOP3 = sample(p3.individuals, out3).haplosomes;
+        sampleNPOP4 = sample(p4.individuals, out4).haplosomes;
+	c(sampleNANC, sampleNPOP1).outputHaplosomesToVCF(filePath = "OUT_DIR/neutral_vcf_pop1_OUT_SUFFIX.vcf");
+	c(sampleNANC, sampleNPOP2).outputHaplosomesToVCF(filePath = "OUT_DIR/neutral_vcf_pop2_OUT_SUFFIX.vcf");
+        c(sampleNANC, sampleNPOP3).outputHaplosomesToVCF(filePath = "OUT_DIR/neutral_vcf_pop3_OUT_SUFFIX.vcf");
+        c(sampleNANC, sampleNPOP4).outputHaplosomesToVCF(filePath = "OUT_DIR/neutral_vcf_pop4_OUT_SUFFIX.vcf");
+}

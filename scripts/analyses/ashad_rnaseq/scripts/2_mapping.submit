@@ -1,0 +1,69 @@
+#!/bin/bash
+#SBATCH --job-name=ashad_map      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL      # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH -t 9-00:00
+#SBATCH --mem=40G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --cpus-per-task=4    # number of cores (threads)
+#SBATCH --output=2_mapping.out    # Standard output log
+#SBATCH --error=2_mapping.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/hisat2/2.2.0
+module load tools/tophat/2.1.1
+module load tools/samtools/1.17
+
+cd /data1/nsm/velottalab/riley/ashad_rnaseq/1_trim
+
+
+## Example files: SRR14511793_1_paired.fastq.gz
+##		  SRR14511793_2_paired.fastq.gz
+
+in_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/trimmed_fastq/"
+out_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/bam/"
+if [ ! -d ${out_dir} ]; then
+   mkdir ${out_dir}
+fi
+
+reference="/data/nsm/velottalab/public_res/genomes/fish/american_shad/GCF_018492685.1/GCF_018492685.1_fAloSap1.pri_genomic"
+if [ ! -f ${reference}.1.ht2 ]; then
+   hisat2-build -p 16 ${reference}.fna ${reference}
+else
+   echo "HiSat reference index exists, continuing to mapping"
+fi
+
+for file in $( ls ${in_dir}*_paired.fastq.gz | sed 's/_[1-2]_paired.fastq.gz//' -e "s/${in_dir}//g" | sort -u ); do
+   echo ${file}
+
+   if [ ! -f ${out_dir}${file}_sorted.bam ]; then
+      ## Get a variable containing a comma-separated list of the unpaired files per tissue
+      unpaired="#"
+      for unpaired_file in $( ls ${in_dir}${file}*unpaired.fastq.gz | sort -u ); do
+          unpaired="${unpaired},${unpaired_file}"
+      done
+      unpaired=$( echo ${unpaired} | sed "s/#,//" )
+      echo ${unpaired}
+
+      ## Map to the American shad reference using HiSat2
+      hisat2 -x ${reference} -U ${unpaired} \
+      -1 ${in_dir}${file}_1_paired.fastq.gz -2 ${in_dir}${file}_2_paired.fastq.gz |
+      samtools view -u - |
+      samtools sort -l 9 - -o ${out_dir}${file}_sorted.bam
+
+      ## Delete any uncompressed .sam or unsorted .bam files (the piping should prevent them from being made but this will remove them just in case)
+      if [ -f ${out_dir}${file}.sam ]; then
+         rm ${out_dir}${file}.sam
+      fi
+      if [ -f ${out_dir}${file}.bam ]; then
+         rm ${out_dir}${file}.bam
+      fi
+   else
+      echo "${out_dir}${file}.bam already exists"
+   fi
+done
+
+date

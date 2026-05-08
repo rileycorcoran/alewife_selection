@@ -1,0 +1,41 @@
+#!/bin/bash
+#SBATCH --job-name=ashad_fc      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL      # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH -t 9-00:00
+#SBATCH --mem=20G
+#SBATCH --cpus-per-task=4    # number of cores (threads)
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=3_featureCounts.out    # Standard output log
+#SBATCH --error=3_featureCounts.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/subread/2.0.6
+
+reference="/data/nsm/velottalab/public_res/genomes/fish/american_shad/GCF_018492685.1/GCF_018492685.1_fAloSap1.pri_genomic_featureCounts.gtf.gz"
+in_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/bam/"
+out_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/featureCounts/"
+if [ ! -d ${out_dir} ]; then
+   mkdir ${out_dir}
+fi
+
+## Create the list of files for featureCounts to run over
+# Example files: SRR14511793_sorted.bam
+file_line="#"
+for file in $( ls ${in_dir}*_sorted.bam | sort -u ); do
+   file_line="${file_line} ${file}"
+done
+files=$( sed 's/# //' <<< ${file_line} )
+
+## Run featureCounts if the file doesn't already exist
+if [ ! -f ${out_dir}all_tissues_featureCounts.txt ]; then
+   featureCounts -p --countReadPairs -t exon -g gene_id -a ${reference} \
+   -o ${out_dir}all_tissues_featureCounts.txt ${files}
+else
+   echo "${out_dir}all_tissues_featureCounts.txt already exists"
+fi
+
+date

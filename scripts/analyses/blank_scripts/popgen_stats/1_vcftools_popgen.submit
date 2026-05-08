@@ -1,0 +1,88 @@
+#!/bin/bash
+#SBATCH --job-name=vcftools_popgen      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=50G
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=1_vcftools_popgen.out    # Standard output log
+#SBATCH --error=1_vcftools_popgen.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/vcftools/0.1.17
+module load apps/R/4.1.3
+
+
+### Calculate FST ###
+in_dir="VCF_IN_DIR"
+in_file="FINAL_VCF"
+out_dir="POPGEN_DIR"
+if [ ! -d ${out_dir} ]; then mkdir ${out_dir}; fi
+
+## Can either run this windowed or not:
+for test in windowed snp; do
+   if [ ${test} == "windowed" ]; then
+      args=" --fst-window-size 50000 --fst-window-step 50000"
+      out_file="_50kb"
+   else
+      args=""
+      out_file=""
+   fi
+
+   ## Running the FST calculation
+   for lake in amos long pat quon; do
+      vcftools --gzvcf ${in_dir}${in_file}.recode.vcf.gz \
+      --weir-fst-pop SCRIPTS_DIR/${lake}_n108_vcftools.txt --weir-fst-pop SCRIPTS_DIR/bride_n108_vcftools.txt \
+      ${args} \
+      --out ${out_dir}/${in_file}_${lake}${out_file}
+   done
+
+   ## Running the plotting code on the SNP-level data
+   if [ ${test} == "snp" ]; then
+      Rscript SCRIPTS_DIR/popgen_stats/vcftools_fst_plot.R ${out_dir}/${in_file}
+   fi
+done
+
+
+### ------------------------------------------------------------------------------------------------------------------------ ###
+
+### Calculate Tajima's D in non-sliding 50Kb windows ###
+prefix="VCF_IN_BASE"
+suffix="VCF_IN_SUFFIX"
+
+for lake in amos bride long pat quon; do
+   vcftools --gzvcf ${in_dir}/${prefix}_${lake}_${suffix}.recode.vcf.gz \
+   --TajimaD 50000 \
+   --out ${out_dir}/${prefix}_${lake}_${suffix}_50kb
+done
+
+
+### ------------------------------------------------------------------------------------------------------------------------ ###
+
+### Calculate both site-level and individual heterozygosity ###
+# On all individuals together (necessary for HWE threshold detection)
+for test in het hardy; do
+   vcftools --gzvcf ${in_dir}/${in_file}.recode.vcf.gz \
+         --${test} \
+         --out ${out_dir}/${in_file}
+done
+
+# On each lake separately
+for lake in amos bride long pat quon; do
+   for test in het hardy; do
+      vcftools --gzvcf ${in_dir}/${in_file}.recode.vcf.gz \
+      --keep SCRIPTS_DIR/${lake}_n108_vcftools.txt \
+      --${test} \
+      --out ${out_dir}/${in_file}_${lake}
+   done
+done
+
+## Calculate sliding window heterozygosity values:
+Rscript SCRIPTS_DIR/popgen_stats/het_hist.R ${in_file} ${out_dir}
+
+date

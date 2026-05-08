@@ -1,0 +1,68 @@
+#!/bin/bash
+#SBATCH --job-name=pixy_interval
+#SBATCH -p defq
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=riley.corcoran@du.edu
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=20G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --array=6
+#SBATCH -t 14-00:00
+#SBATCH --output=1_pixy_interval_%a.out
+#SBATCH --error=1_pixy_interval_%a.err
+
+date
+
+## Load modules below
+module load htslib/1.21-gcc-11.5.0-linux-rocky9-x86_64-bzf5hjb
+module load python/3.11.11-gcc-11.5.0-linux-rocky9-x86_64-l36w3q7
+
+eval "$(conda shell.bash hook)"
+conda activate pixy-env2
+
+## Execute commands for application below
+in_dir="BY_CHROM_DIR"
+out_file="GVCF_IN_pixy_FILTERING_OUT"
+out_dir="POPGEN_DIR/pixy"
+scripts_dir="SCRIPTS_DIR/popgen_stats/pixy"
+if [ ! -d ${out_dir} ]; then mkdir ${out_dir}; fi
+
+
+eval $(line_assign.submit $SLURM_ARRAY_TASK_ID ${scripts_dir}/chrom_intervals_1000000.txt)
+## Because some of the intervals didn't run correctly:
+#eval $(line_assign.submit $SLURM_ARRAY_TASK_ID ${scripts_dir}/chrom_redo_intervals_1000000.txt)
+echo ${interval}
+
+region_chr_num=$(echo ${interval} | egrep -o "chr[[:digit:]]+" | egrep -o "[[:digit:]]+")
+region_chr=$(grep -P "\t${region_chr_num}$" SCRIPTS_DIR/chromosomes_index.tsv | sed "s/\t${region_chr_num}//")
+region_start=$(echo ${interval} | egrep -o "_[[:digit:]]+" | tr -d "_")
+region_end=$(echo ${interval} | egrep -o "\-[[:digit:]]+" | tr -d "-")
+
+
+## Run pixy to get site-level pi and dxy only for those regions (smallest files)
+pixy --stats dxy pi \
+     --vcf ${in_dir}${out_file}_${region_chr}.recode.vcf.gz \
+     --populations SCRIPTS_DIR/ashad_n107_tab.lab \
+     --window_size 1 \
+     --n_cores 32 \
+     --output_dir ${out_dir} \
+     --output_prefix ${interval} \
+     --chromosomes ${region_chr} \
+     --interval_start ${region_start} \
+     --interval_end ${region_end}
+
+date
+
+## Run the second batch of scripts because of job submission limits
+if [ $SLURM_ARRAY_TASK_ID == 400 ]; then
+   sbatch ${scripts_dir}/1_pixy_interval_array_500.submit
+fi
+
+
+### For rerunning the intervals that pixy refused to calculate correctly:
+#for line_num in $(grep -o "ValueError: The specified interval start" ${scripts_dir}/1_pixy_interval*.err | grep -Po "[0-9]+." | grep -Po "[0-9]+"); do awk -v x="^${line_num}\t" '$0~x {print $0}' ${scripts_dir}/chrom_intervals_1000000.txt >> ${scripts_dir}/chrom_redo_intervals_1000000.txt; awk -v x="^${line_num}\t" '$0~x {print $0}' ${scripts_dir}/chrom_intervals_1000000.txt >> ${scripts_dir}/chrom_redo_intervals_1000000.txt; done
+## Duplicated in order to have a second line to edit when changing the intervals
+
+## Change the header and replace the old interval column with a new set for rerunning
+#awk '{print (NR == 1 ? "" : NR-1) "\t" $0}' ${scripts_dir}/chrom_redo_intervals_1000000.txt | sed "s/^\tindex\tinterval/index\told\tinterval/" | awk '{print $1"\t"$3}'

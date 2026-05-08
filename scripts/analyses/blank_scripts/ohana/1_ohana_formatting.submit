@@ -1,0 +1,92 @@
+#!/bin/bash
+#SBATCH --job-name=format_ohana      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=30G
+#SBATCH -t 6-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=1_ohana_formatting.out    # Standard output log
+#SBATCH --error=1_ohana_formatting.err     # Standard error log
+
+date
+
+## Load modules below
+module load vcftools/0.1.16-gcc-11.5.0-linux-rocky9-x86_64-7djyuxr
+module load htslib/1.21-gcc-11.5.0-linux-rocky9-x86_64-bzf5hjb
+module load plink/1.9
+module load bcftools/1.21-gcc-11.5.0-linux-rocky9-x86_64-uy3cc4z
+module load r/4.5.1-gcc-11.5.0-linux-rocky9-x86_64-26rwooq
+
+## This file starts with the input from 3_general_filtering.submit, which has been flagged and hard-filtered (GATK)
+
+### Soft Filtering ###
+## Here I'm taking the most common vcftools filters at their lower frequent thresholds:
+##      - Base / SNP / Genotyping quality / QUAL > 20
+##      - minimum DP (at least 5 reads total at a loci) > 5
+##      - minimum % of individuals missing at a loci 75% (equal to 81 individuals)
+##      - biallelic SNPs only
+##	- Also removing the two worst depth/missingness individuals
+##	- Ohana requests to run with a LD 100Kbp thinned file
+##	- Ohana also mentions that all of the real data in their paper had MAF 5% applied, so I'm trying that here with MAF 1% to be consistent
+
+## Set up basic variables
+in_dir="VCF_IN_DIR"
+filter_dir="FILTERCHECK_DIR"
+in_file="VCF_IN_BASE"
+
+## First need to find all sites that would get removed due to HWE < 1e-10
+vcftools --gzvcf ${in_dir}${in_file}.recode.vcf.gz --hardy --out ${filter_dir}${in_file}
+Rscript SCRIPTS_DIR/HWE_1e-10_snps.R ${filter_dir}${in_file}
+
+
+## Now run the actual filtering for Ohana inputs
+in_dir="VCF_PAIRWISE_IN_DIR"
+if [ ! -d ${in_dir} ]; then
+   mkdir ${in_dir}
+fi
+out_dir="OHANA_OUT_DIR"
+if [ ! -d ${out_dir} ]; then
+   mkdir -p ${out_dir}
+fi
+
+thin_by="50000"
+thin_name="50kb"
+plink_settings="_geno01"
+vcftools_settings="_HWE1e-10_MAF001"
+
+### Loop for running pairwise file creation
+for lake in amos long pat quon; do
+
+   ## First need to set up all of the parameters
+   in_file="all_chrom_scaffolds_ashad_replaced_allsites_bylake-vc_gatkrecHardF_snps_bride_${lake}_maxMeanDP16_softF_rmA28Q17Q1"
+   out_vcftools="${in_file}_maxMissing75${vcftools_settings}"
+   out_full="${out_vcftools}${plink_settings}"
+   out_thin="${out_vcftools}_LD${thin_name}${plink_settings}"
+
+   ## Filter the vcf files according to # of lakes
+   vcftools --gzvcf ${in_dir}${in_file}.recode.vcf.gz \
+	    --out ${in_dir}${out_vcftools} \
+ 	    --max-missing 0.75 \
+	    --maf 0.01 \
+	    --exclude-positions ${filter_dir}${in_file}_HWE1e-10_snps.txt \
+            --recode-INFO-all \
+	    --recode
+
+   ## Gzip the file and remove the unzipped one
+   bgzip -c ${in_dir}${out_vcftools}.recode.vcf > ${in_dir}${out_vcftools}.recode.vcf.gz
+   rm ${in_dir}${out_vcftools}.recode.vcf
+
+   ## Creating the .ped input files for Ohana
+   ## Non-LD-thinned
+   plink --allow-extra-chr --vcf ${in_dir}${out_vcftools}.recode.vcf.gz --recode 12 tab --geno 0.1 --out ${out_dir}${out_full}
+
+   ## LD thinned - first limit to only sites with missingness < 0.1 and create .txt file of sites to thin; then LD thin the vcf resulting from the first step
+   plink --allow-extra-chr --vcf ${in_dir}${out_vcftools}.recode.vcf.gz --geno 0.1 --indep-pairwise 50 5 0.2 --set-missing-var-ids @:# --recode vcf --out ${out_dir}${out_full}_thinned
+   plink --allow-extra-chr --vcf ${out_dir}${out_full}_thinned.vcf --exclude ${out_dir}${out_full}_thinned.prune.out --recode 12 tab --out ${out_dir}${out_thin}_new
+   rm ${out_dir}${out_full}_thinned.vcf
+done
+
+date

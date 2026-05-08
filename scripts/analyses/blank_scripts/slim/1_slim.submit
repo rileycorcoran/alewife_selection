@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --job-name=slim
+#SBATCH -p defq
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=riley.corcoran@du.edu
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=10G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH -t 14-00:00
+#SBATCH --array=1-20
+#SBATCH --output=1_slim_%A_%a.out
+#SBATCH --error=1_slim_%A_%a.err
+
+date
+
+module load htslib/1.21-gcc-11.5.0-linux-rocky9-x86_64-bzf5hjb
+
+## Set directory variables
+bin_dir="BIN_DIR"
+in_dir="SCRIPTS_DIR/slim"
+out_dir="DATA_DIR/slim"
+mkdir -p ${out_dir}
+
+## Set the replicate number and SLiM script to use
+out_num=$SLURM_ARRAY_TASK_ID
+script="A2L_5way_30Mb_rescale_bot_s"
+
+
+## Iterate over different selection coefficients and bottleneck strengths
+for sel_s in 0.005 0.05 0.5; do
+   for bot_str in 10 100 1000; do
+      out_suffix="bot_${bot_str}x_s${sel_s}_rep${out_num}"
+
+      sed -e "s#NUM#${out_num}#g" \
+          -e "s#SEL_S#${sel_s}#g" \
+          -e "s#BOT_STR#${bot_str}#g" \
+          -e "s#OUT_SUFFIX#${out_suffix}#g" \
+          -e "s#OUT_DIR#${out_dir}#g" \
+      ${in_dir}/${script}_blank.slim > ${in_dir}/repeatability/${script}_${out_suffix}.slim
+
+      ## Run SLiM
+      ${bin_dir}/build/slim -t -m ${in_dir}/repeatability/${script}_${out_suffix}.slim
+      # -t -m : output time and memory requirements for the whole simulation once completed
+
+      for pop in 1 2 3 4; do
+         bgzip ${out_dir}/neutral_vcf_pop${pop}_${out_suffix}.vcf
+      done
+   done
+done
+
+date

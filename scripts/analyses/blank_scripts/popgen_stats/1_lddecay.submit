@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --job-name=lddecay
+#SBATCH -p defq
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=riley.corcoran@du.edu
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=10G
+#SBATCH -t 3-00:00
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=1_lddecay.out
+#SBATCH --error=1_lddecay.err
+
+date
+
+## Load modules below
+source ~/.bashrc
+module load apps/perl/5.38.2
+module load compilers/gcc-12.1.4
+
+## Set basic variables
+bin_dir="BIN_DIR"
+in_dir="VCF_IN_DIR"
+in_file="VCF_IN_BASE"
+out_dir="DATA_DIR/popgen_stats"
+mkdir -p ${out_dir}
+rm ${out_dir}/multi.list
+
+
+## This uses an install from 3/23/25
+for lake in amos bride long pat quon; do
+   ${bin_dir}/PopLDdecay/bin/PopLDdecay \
+      -InVCF ${in_file}.recode.vcf.gz \
+      -SubPop SCRIPTS_DIR/${lake}_n108_vcftools.txt \
+      -OutStat ${out_dir}/LDdecay_${lake}
+
+   echo ${out_dir}/LDdecay_${lake}.stat.gz,${lake} >> ${out_dir}/multi.list
+done
+
+cat ${out_dir}/multi.list | tr "," "\t" > ${out_dir}/multi_tab.list
+
+
+perl ${bin_dir}/PopLDdecay/bin/Plot_MultiPop.pl \
+    -inList ${out_dir}/multi_tab.list \
+    -output ${out_dir}/LDdecay_comp
+
+## Make the comparison plot
+module load r/4.5.1-gcc-11.5.0-linux-rocky9-x86_64-26rwooq
+Rscript SCRIPTS_DIR/popgen_stats/LDdecay_comp.R ${out_dir}
+
+date

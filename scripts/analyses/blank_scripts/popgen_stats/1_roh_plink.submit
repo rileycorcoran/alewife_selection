@@ -1,0 +1,37 @@
+#!/bin/bash
+#SBATCH --job-name=roh      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL           # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH --ntasks=1                # a single CPU
+#SBATCH --cpus-per-task=4
+#SBATCH -t 3-00:00
+#SBATCH --mem=10G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --output=1_plink_roh.out    # Standard output log
+#SBATCH --error=1_plink_roh.err    # Standard error log
+
+date
+
+## Load modules below
+module load plink/1.9
+
+out_dir="POPGEN_DIR"
+out_file="FINAL_VCF"
+in_dir="VCF_IN_DIR"
+
+for lake in amos bride long pat quon; do
+   ## Assign lake-specific variables calculated from SCRIPTS_DIR/popgen_stats/calculate_L.R
+   if [[ $lake == "amos" ]]; then L=124; t=0.04
+   elif [[ $lake == "bride" ]]; then L=66; t=0.075
+   elif [[ $lake == "long" ]]; then L=113; t=0.044
+   elif [[ $lake == "pat" ]]; then L=92; t=0.054
+   elif [[ $lake == "quon" ]]; then L=97; t=0.051
+   fi
+
+   ## 500kb ROH search
+   plink --bfile ${in_dir}${out_file}.recode --homozyg-snp ${L} --homozyg-kb 500 --homozyg-density 50 --homozyg-gap 1000 --homozyg-window-snp 50 --homozyg-window-het 1 --homozyg-window-missing 5 --homozyg-window-threshold ${t} --keep ./../../8_filtervcf/${lake}_n108_plink_v2.txt --out ${out_dir}${alignment}_${lake}_plink_roh --allow-extra-chr
+   sed -i "s# \+#\t#g" ${out_dir}${alignment}_${lake}_plink_roh.hom
+done
+
+date

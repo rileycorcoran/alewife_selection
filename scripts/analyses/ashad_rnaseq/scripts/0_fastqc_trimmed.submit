@@ -1,0 +1,40 @@
+#!/bin/bash
+#SBATCH --job-name=trim_fastqc      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL            # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH -t 0-24:00
+#SBATCH --ntasks=1                 # a single CPU
+#SBATCH --cpus-per-task=2
+#SBATCH --output=0_fastqc_trimmed.out    # Standard output log
+#SBATCH --error=0_fastqc_trimmed.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/fastqc/0.11.9
+module load compilers/anaconda-2021.11
+
+in_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/fastq"
+out_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/fastqc/trimmed/"
+
+## Trimmed files: SRR14511793_1_paired_fastp.fastq.gz
+## Fastqc files:  SRR14511793_1_paired_fastqc.zip
+
+## Run fastQC on the trimmed files
+for file in $( ls ${in_dir}*.fastq.gz | sed -e "s/.fastq.gz//" -e "s/${in_dir}//g" | sort -u ); do
+   if [ ! -f ${out_dir}/${file}_fastqc.zip ]; then
+      fastqc -t 2 -o ${out_dir} ${in_dir}${file}.fastq.gz
+   fi
+done
+
+
+## Compile the trimmed fastQC files into a MultiQC report
+cd /data1/nsm/velottalab/riley/ashad_rnaseq/0_fastqc/trimmed
+
+eval "$(conda shell.bash hook)"
+conda activate multiqc-env
+
+multiqc ./*fastp* -o .
+
+date

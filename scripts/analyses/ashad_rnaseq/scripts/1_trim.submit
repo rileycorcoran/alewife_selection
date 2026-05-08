@@ -1,0 +1,37 @@
+#!/bin/bash
+#SBATCH --job-name=ashad_rnaseq_trim      # Job name
+#SBATCH -p defq
+#SBATCH --mail-type=ALL      # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=riley.corcoran@du.edu     # Where to send mail
+#SBATCH -t 3-00:00
+#SBATCH --mem=20G
+#SBATCH --exclude=node[001,002,012,013]
+#SBATCH --cpus-per-task=4    # number of cores (threads)
+#SBATCH --output=1_trim_fastp.out    # Standard output log
+#SBATCH --error=1_trim_fastp.err     # Standard error log
+
+date
+
+## Load modules below
+module load tools/fastp/0.23.4
+
+in_dir="data/nsm/velottalab/public_res/rnaseq/fish/ashad_2021/fastq/"
+out_dir="/data/nsm/velottalab/riley/manuscript_pipeline/analyses/ashad_rnaseq/data/trimmed_fastq/"
+
+## Example file: SRR14511793_1.fastq.gz
+##               SRR14511793_2.fastq.gz
+
+## Trimmomatic settings:
+## LEADING:5 - cut bases off start of a read with Phred < 5
+## TRAILING:5 - cut bases off end of a read with Phred < 5
+## SLIDINGWINDOW:4:15 - window size of 4 to remove bases with average Phred < 15
+## MINLEN:36 - drop read if less than 36bp long
+
+for file in $( ls ${in_dir}*.fastq.gz | sed -e 's/_[1-2].fastq.gz//' -e "s#${in_dir}##" | sort -u ); do
+   fastp -i ${in_dir}${file}_1.fastq.gz -I ${in_dir}${file}_2.fastq.gz \
+      -o ${out_dir}${file}_1_paired.fastq.gz -O ${out_dir}${file}_2_paired.fastq.gz  \
+      --unpaired1=${out_dir}${file}_1_unpaired.fastq.gz --unpaired2=${out_dir}${file}_2_unpaired.fastq.gz \
+      --cut_front --cut_window_size=4 --cut_mean_quality=15 -l 36 --detect_adapter_for_pe
+done
+
+date
